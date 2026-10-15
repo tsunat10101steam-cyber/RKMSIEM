@@ -27,9 +27,32 @@ log = logging.getLogger("rkmsiem.terminal")
 LOGIN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,31}$")
 # 구형 장비(오래된 스위치·라우터 펌웨어) 호환: 기본으로 꺼진 옛 암호 방식을 '목록 끝에 추가' 만 한다.
 # 최신 방식이 먼저라 상대가 지원하면 그쪽이 고르고, 옛 방식만 아는 장비에서만 옛 방식으로 붙는다. 접속할 때 사람이 고른 경우에만.
-LEGACY_OPTS = ["-o", "KexAlgorithms=+diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1",
-               "-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss", "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
-               "-o", "Ciphers=+aes128-cbc,aes192-cbc,aes256-cbc,3des-cbc", "-o", "MACs=+hmac-sha1,hmac-md5"]
+LEGACY = {"KexAlgorithms": ("kex", ["diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1"]),
+          "HostKeyAlgorithms": ("key", ["ssh-rsa", "ssh-dss"]),
+          "PubkeyAcceptedAlgorithms": ("key", ["ssh-rsa"]),
+          "Ciphers": ("cipher", ["aes128-cbc", "aes192-cbc", "aes256-cbc", "3des-cbc"]),
+          "MACs": ("mac", ["hmac-sha1", "hmac-md5"])}
+_legacy_cache = {}
+
+
+def legacy_opts(ssh):
+    """이 서버의 ssh 가 실제로 아는 옛 방식만 (배포판마다 빠진 것이 다름 — 예: OpenSSH 9.8+ 는 ssh-dss 없음).
+    모르는 이름이 하나라도 섞이면 ssh 가 'Bad key types' 로 아예 시작하지 않는다."""
+    if ssh not in _legacy_cache:
+        known, out = {}, []
+        for opt, (q, algs) in LEGACY.items():
+            if q not in known:
+                try:
+                    known[q] = set(subprocess.run([ssh, "-Q", q], capture_output=True, text=True, timeout=5).stdout.split())
+                except (OSError, subprocess.TimeoutExpired):
+                    known[q] = set()
+            ok = [a for a in algs if a in known[q]]
+            if ok:
+                out += ["-o", f"{opt}=+{','.join(ok)}"]
+        _legacy_cache[ssh] = out
+    return _legacy_cache[ssh]
+
+
 BUF_MAX = 256 * 1024          # 세션마다 기억하는 최근 출력 (다시 붙을 때 화면 복원용)
 
 
@@ -137,7 +160,7 @@ class TerminalManager:
         return [ssh, "-F", "/dev/null", "-o", "EscapeChar=none", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
                 "-o", "PermitLocalCommand=no", "-o", "StrictHostKeyChecking=ask", "-o", f"UserKnownHostsFile={os.path.join(self.dir, 'known_hosts')}",
                 "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=4",
-                *(LEGACY_OPTS if legacy else []), "-p", str(port), "-l", login, ip]
+                *(legacy_opts(ssh) if legacy else []), "-p", str(port), "-l", login, ip]
 
     # -------------------------------------------------------------- 열기·닫기
     def open(self, user, ip, login, port=22, cols=100, rows=30, legacy=False):

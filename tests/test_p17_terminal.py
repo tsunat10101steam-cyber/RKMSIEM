@@ -111,11 +111,20 @@ def test_legacy_option(ctx, monkeypatch):
     p, c, H = ctx
     import shutil
     from rkmsiem.terminal import TerminalManager
+    import subprocess
+    from rkmsiem import terminal as T
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/ssh")
+    known = {"kex": "diffie-hellman-group1-sha1 diffie-hellman-group14-sha1 diffie-hellman-group-exchange-sha1 curve25519-sha256",
+             "key": "ssh-ed25519 ssh-rsa", "cipher": "aes128-ctr aes128-cbc aes192-cbc aes256-cbc 3des-cbc", "mac": "hmac-sha1 hmac-md5"}
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 0, known[argv[-1]], ""))
+    T._legacy_cache.clear()
     plain, old = TerminalManager.argv(p.terminal, "10.0.0.20", "ops", 22), TerminalManager.argv(p.terminal, "10.0.0.20", "ops", 22, legacy=True)
     assert not any("group1" in a for a in plain)
     assert "KexAlgorithms=+diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1" in old
     assert old[-5:] == ["-p", "22", "-l", "ops", "10.0.0.20"]                      # 대상은 항상 맨 끝
+    assert "HostKeyAlgorithms=+ssh-rsa" in old and not any("ssh-dss" in a for a in old)   # 이 ssh 가 모르는 방식은 빼야 함
+    T._legacy_cache.clear()
+    monkeypatch.undo()
     c.put("/api/config/topology", headers=H("boss"), json=LAYOUT)
     r = c.post("/api/terminal", headers=H("boss"), json={"ip": "10.0.0.20", "login": "ops", "legacy": True})
     assert r.status_code == 201 and r.get_json()["legacy"] is True
