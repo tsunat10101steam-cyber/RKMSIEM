@@ -7,6 +7,6 @@ dist/
 *.db
 *.db-*
 secret.key
-auth.log
+/auth.log
 reports/
 .claude/
