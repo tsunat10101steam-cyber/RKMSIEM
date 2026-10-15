@@ -27,8 +27,9 @@ login() {
 	RK_U="$RKMSIEM_ADMIN_USER" RK_P="$1" python3 -c 'import json,os;print(json.dumps({"username":os.environ["RK_U"],"password":os.environ["RK_P"]}))' \
 		| curl -fsS -H 'Content-Type: application/json' --data-binary @- $BASE/api/auth/login 2>/dev/null | j 'd["token"]' 2>/dev/null
 }
-TOKEN="$(login "$RKMSIEM_ADMIN_PASSWORD" || true)"
+TOKEN="$(login "${SMOKE_ADMIN_PASSWORD:-$RKMSIEM_ADMIN_PASSWORD}" || true)"   # SMOKE_ADMIN_PASSWORD: 설치 화면이 넘겨줌
 if [ -z "$TOKEN" ]; then                       # 설치 후 비밀번호를 바꾼 경우 → 직접 입력 (명령 기록에 남지 않음)
+	[ -t 0 ] || { echo "로그인 실패 — 관리자 비밀번호를 확인하세요"; exit 1; }
 	read -rsp "  $RKMSIEM_ADMIN_USER 비밀번호를 입력하세요 (화면에 안 보임): " PW; echo
 	TOKEN="$(login "$PW" || true)"
 	[ -n "$TOKEN" ] || { echo "로그인 실패 — 비밀번호 확인 또는 1분 뒤 재시도(로그인 시도 제한)"; exit 1; }

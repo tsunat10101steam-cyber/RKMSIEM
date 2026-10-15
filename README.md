@@ -66,7 +66,18 @@ python -m staffdir serve                      # (선택) 담당자 관리 앱 ht
 - 기존 스크립트: `python app.py [로그경로]` (콘솔 출력), `python dashboard.py` (오프라인 HTML 리포트)
 - `Dockerfile` · `docker-compose.yml` 제공 — **이 개발 PC 에 Docker 가 없어 검증하지 못했습니다.**
 
-## 2-1. Ubuntu 서버 운영 배포 (22.04 / 24.04)
+## 2-1. Ubuntu 서버 운영 배포 (22.04 / 24.04 / 26.04)
+
+**화면으로 설치·점검 (권장)** — 화살표·스페이스·엔터로 옵션 선택, 진행률 막대, 자체 점검 결과 정리:
+
+```bash
+# 처음 한 번 — 최신 버전을 받아 설치하고 화면을 띄움
+curl -fsSL https://raw.githubusercontent.com/tsunat10101steam-cyber/RKMSIEM/main/deploy/get.sh | sudo bash
+# 이후에는
+sudo rkmsiem-setup                  # 메뉴: 설치 · 자체 점검 · 업데이트(GitHub 최신 자동 받기) · 외부 접속 허용 · 상태 · 제거
+```
+
+압축 파일로 받았다면 `sudo ./deploy/setup-tui.sh` 가 같은 화면입니다. 명령으로 직접 하려면:
 
 ```bash
 # 프로젝트를 서버로 복사한 뒤 (git clone 또는 scp), 프로젝트 루트에서

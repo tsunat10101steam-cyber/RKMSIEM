@@ -5,12 +5,13 @@
   rkmsiem-v<버전>.tgz      압축 파일 (예전 방식:  sudo ./deploy/install.sh)
 
 허용 목록에 있는 파일만 담는다 — .env · data/ · DB · secret.key · 캐시 · 로컬 로그는 절대 들어가지 않음.
-.deb 는 /usr/share/rkmsiem 에 원본을 풀고 rkmsiem-setup/update/uninstall 명령만 만든다.
+.deb 는 /usr/share/rkmsiem 에 원본을 풀고 rkmsiem-setup(설치·점검 화면)/smoketest/update/uninstall 명령만 만든다.
 설치(install.sh)는 내부에서 apt 를 쓰므로 패키지 설치 중(dpkg 잠금)에는 돌릴 수 없어 사용자가 이어서 실행한다.
 """
 import gzip
 import io
 import os
+import shutil
 import sys
 import tarfile
 import time
@@ -23,7 +24,7 @@ SKIP_DIRS = {"__pycache__", ".pytest_cache", "dist"}
 SKIP_EXT = (".pyc", ".db", ".db-wal", ".db-shm", ".key", ".mmdb")
 EXEC_EXT = (".sh",)
 EXEC_NAMES = {"rkmsiem-account", "rkmsiem-ship-eve.py", "build-deb.py"}
-DEPENDS = "python3 (>= 3.10), python3-venv, python3-pip, nftables, sudo | sudo-rs, curl, rsyslog, fonts-nanum"
+DEPENDS = "python3 (>= 3.10), python3-venv, python3-pip, nftables, sudo | sudo-rs, curl, rsyslog, fonts-nanum, whiptail"
 
 
 def files():
@@ -97,9 +98,15 @@ def deb(paths, out, version, now):
             add_dir(t, d, now)
         for rel in paths:
             add_bytes(t, share + rel, read(rel), mode_of(rel), now)
-        for cmd, script in (("setup", "install.sh"), ("update", "update.sh"), ("uninstall", "uninstall.sh")):
-            add_bytes(t, f"./usr/sbin/rkmsiem-{cmd}",
-                      f'#!/bin/sh\nexec /usr/share/rkmsiem/deploy/{script} "$@"\n'.encode(), 0o755, now)
+        dep = "/usr/share/rkmsiem/deploy"
+        cmds = {   # rkmsiem-setup: 인자 없으면 설치·점검 화면(whiptail), 인자가 있으면 예전처럼 install.sh 옵션
+            "setup": f'#!/bin/sh\n[ $# -eq 0 ] && exec {dep}/setup-tui.sh\nexec {dep}/install.sh "$@"\n',
+            "smoketest": f'#!/bin/sh\nexec {dep}/smoketest.sh "$@"\n',
+            "update": f'#!/bin/sh\nexec {dep}/update.sh "$@"\n',
+            "uninstall": f'#!/bin/sh\nexec {dep}/uninstall.sh "$@"\n',
+        }
+        for cmd, body in cmds.items():
+            add_bytes(t, f"./usr/sbin/rkmsiem-{cmd}", body.encode(), 0o755, now)
     size_kb = sum(len(read(r)) for r in paths) // 1024 + 1
     control = f"""Package: rkmsiem
 Version: {version}
@@ -111,15 +118,15 @@ Section: admin
 Priority: optional
 Description: RKMSIEM - Ubuntu 인증 로그 SIEM/SOAR
  SSH 무차별 대입·계정 탈취·권한 상승을 탐지하고 nftables 차단·계정 잠금으로 대응합니다.
- 설치 후 'sudo rkmsiem-setup' 으로 서비스를 구성하세요.
+ 설치 후 'sudo rkmsiem-setup' 화면에서 설치·자체 점검을 진행하세요.
 """.encode()
     postinst = """#!/bin/sh
 set -e
 if [ "$1" = configure ]; then
 	if [ -f /etc/rkmsiem/config/settings.yaml ]; then
-		echo "RKMSIEM 새 버전을 받았습니다. 적용:  sudo rkmsiem-update"
+		echo "RKMSIEM 새 버전을 받았습니다. 적용:  sudo rkmsiem-setup  ->  업데이트"
 	else
-		echo "RKMSIEM 를 받았습니다. 설치(서비스 구성):  sudo rkmsiem-setup"
+		echo "RKMSIEM 를 받았습니다. 설치·점검 화면:  sudo rkmsiem-setup"
 		echo "  첫 로그인 admin / admin -> 로그인 후 바로 'passwd' 로 바꾸세요"
 	fi
 fi
@@ -144,7 +151,9 @@ def main():
     z = os.path.join(ROOT, "dist", f"rkmsiem-v{version}.tgz")
     deb(paths, d, version, now)
     tgz(paths, z, "./", now)
-    for p in (d, z):
+    latest = os.path.join(ROOT, "dist", "rkmsiem_all.deb")      # 버전 없는 이름 — releases/latest/download/ 주소가 늘 같게
+    shutil.copyfile(d, latest)
+    for p in (d, latest, z):
         print(f"{p}  ({os.path.getsize(p) // 1024} KB, 파일 {len(paths)}개)")
 
 
