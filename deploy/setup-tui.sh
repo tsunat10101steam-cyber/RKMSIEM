@@ -27,7 +27,8 @@ dims() {
 msg()      { dims; whiptail --title "$1" --msgbox "$2" "$H" "$W"; }
 ask()      { dims; whiptail --title "$1" --yes-button "${3:-예}" --no-button "${4:-아니오}" --yesno "$2" "$H" "$W"; }
 ask_no()   { dims; whiptail --title "$1" --defaultno --yes-button "${3:-예}" --no-button "${4:-아니오}" --yesno "$2" "$H" "$W"; }
-input()    { dims; whiptail --title "$1" --inputbox "$2" 11 "$W" "${3:-}" 3>&1 1>&2 2>&3; }
+input()    { dims; local h; h=$(( $(printf '%b' "$2" | wc -l) + 9 )); [ "$h" -le "$H" ] || h=$H
+             whiptail --title "$1" --inputbox "$2" "$h" "$W" "${3:-}" 3>&1 1>&2 2>&3; }
 secret()   { dims; whiptail --title "$1" --passwordbox "$2" 10 "$W" 3>&1 1>&2 2>&3; }
 showfile() { dims; whiptail --title "$1" --scrolltext --textbox "$2" "$H" "$W"; }
 installed() { [ -f "$ETC/config/settings.yaml" ]; }
@@ -61,7 +62,8 @@ valid_nets() {     # 쉼표·공백 구분 IP/대역 → 정규화해서 한 줄
 import ipaddress, re, sys
 items = [x for x in re.split(r"[,\s]+", sys.argv[1]) if x]
 try:
-    print("\n".join(str(ipaddress.ip_network(x, strict=False)) for x in items))
+    nets = [ipaddress.ip_network(x, strict=False) for x in items]
+    print("\n".join(str(n.network_address) if n.prefixlen == n.max_prefixlen else str(n) for n in nets))   # 단일 주소는 /32 없이 (ufw 표기와 같게)
 except ValueError as e:
     print(e, file=sys.stderr); sys.exit(1)
 PY
@@ -73,29 +75,61 @@ tls_on() { [ -e /etc/nginx/sites-enabled/rkmsiem ] && [ -s "$ETC/tls/rkmsiem.crt
 http_exposed() { [ "$(envval RKMSIEM_API__HOST "$ENVF")" = 0.0.0.0 ] && ! tls_on; }
 tls_fp() { openssl x509 -in "$ETC/tls/rkmsiem.crt" -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//'; }
 
-# 다른 PC 에서 웹 콘솔·담당자 관리 접속 허용: HTTPS(nginx, 8443·8444)로만 열고, 방화벽은 고른 곳만 연다.
-# 앱(8088·8090)은 이 서버 안(127.0.0.1)에서만 받는다 — 비밀번호·토큰·터미널 입력이 망에 평문으로 다니지 않게.
+# 방화벽이 꺼져 있으면 켤지 묻기 — 창을 띄우므로 $( ) 밖에서 부를 것. 결과 문구는 UFW_MSG 에
+ufw_offer() {
+	UFW_MSG=""
+	ufw_active || ! command -v ufw >/dev/null 2>&1 && return 0
+	if ask "방화벽" "방화벽(ufw)이 꺼져 있어 같은 망의 모든 기기가 콘솔 로그인 화면까지 올 수 있습니다.\n\nufw 를 켜고 고른 곳만 허용할까요?\n(SSH 22번은 자동으로 허용해 접속이 끊기지 않습니다)" "켜기" "그대로"; then
+		ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null
+		ufw --force enable >/dev/null && UFW_MSG="방화벽(ufw)을 켰습니다 (SSH 허용).\n"
+	fi
+}
+
+# HTTPS(nginx, 8443·8444) 켜기 — 앱(8088·8090)은 이 서버 안(127.0.0.1)에서만. 창 없음, 결과 문구 출력
+tls_enable() {
+	tls_on && ! http_exposed && return 0
+	local log="$LOGDIR/tls-$(date +%Y%m%d-%H%M%S).log"
+	if "$SRC/deploy/tls.sh" > "$log" 2>&1; then printf 'HTTPS 를 켰습니다 (자체 서명 인증서 · 기록: %s).\n' "$log"
+	else printf '✘ HTTPS 켜기 실패 — %s 확인\n' "$log"; return 1; fi
+}
+
+# 다른 PC 에서 접속 허용 (설치 화면용, 창 없음): HTTPS 켜고 고른 곳만 8443·8444 허용
 open_access() {
-	local nets="$1" out="" n log="$LOGDIR/tls-$(date +%Y%m%d-%H%M%S).log"
-	if ! tls_on || http_exposed; then
-		if "$SRC/deploy/tls.sh" > "$log" 2>&1; then out+="HTTPS 를 켰습니다 (자체 서명 인증서 · 기록: $log).\n"
-		else out+="✘ HTTPS 켜기 실패 — $log 확인\n"; printf '%b' "$out"; return; fi
-	fi
-	if ! ufw_active && command -v ufw >/dev/null 2>&1; then
-		if ask "방화벽" "방화벽(ufw)이 꺼져 있어 같은 망의 모든 기기가 콘솔 로그인 화면까지 올 수 있습니다.\n\nufw 를 켜고 고른 곳만 허용할까요?\n(SSH 22번은 자동으로 허용해 접속이 끊기지 않습니다)" "켜기" "그대로"; then
-			ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null
-			ufw --force enable >/dev/null && out+="방화벽(ufw)을 켰습니다 (SSH 허용).\n"
-		fi
-	fi
+	local nets="$1" out n
+	out="$(tls_enable)" || { printf '%s\n' "$out"; return; }
 	if ufw_active; then
 		for n in $nets; do
 			ufw allow from "$n" to any port 8443 proto tcp >/dev/null
 			ufw allow from "$n" to any port 8444 proto tcp >/dev/null
-			out+="허용: $n → 8443(콘솔) · 8444(담당자 관리)\n"
+			out+="${out:+\n}허용: $n → 8443(콘솔) · 8444(담당자 관리)"
 		done
 	fi
-	out+="인증서 지문(SHA-256): $(tls_fp)\n브라우저가 처음 한 번 경고하면 인증서 정보의 지문이 위와 같은지 확인하고 진행하세요.\n"
-	printf '%b' "$out"
+	printf '%b\n인증서 지문(SHA-256): %s\n브라우저가 처음 한 번 경고하면 인증서 정보의 지문이 위와 같은지 확인하고 진행하세요.\n' "$out" "$(tls_fp)"
+}
+
+# ── 외부 접속: 고를 수 있는 후보 ──
+allowed_srcs() { ufw status 2>/dev/null | awk '$1 ~ /^8443(\/tcp)?$/ && $2 == "ALLOW" {print $3}' | sort -u; }
+blocked_srcs() {   # 최근 이 서버의 웹 포트로 오다가 방화벽에 막힌 출발지 (많이 온 순)
+	{ tail -n 3000 /var/log/ufw.log 2>/dev/null; journalctl -k -q --since -3d 2>/dev/null | tail -n 3000; } \
+		| grep 'UFW BLOCK' | grep -E 'DPT=(8443|8444|8088|8090) ' | sed -n 's/.* SRC=\([0-9.]*\) .*/\1/p' \
+		| sort | uniq -c | sort -rn | awk '{print $2}' | head -5
+}
+access_candidates() {   # 한 줄에 "주소<TAB>설명<TAB>ON|OFF"
+	local -A seen=()
+	_cand() { [ -n "$1" ] && [ -z "${seen[$1]:-}" ] || return 0; seen[$1]=1; printf '%s\t%s\t%s\n' "$1" "$2" "$3"; }
+	local s
+	for s in $(allowed_srcs); do _cand "$s" "지금 허용됨 (끄면 허용 해제)" ON; done
+	for s in $(blocked_srcs); do _cand "$s" "최근 접속하려다 방화벽에 막힌 주소 ← 보통 이것" OFF; done
+	s="$(who -m 2>/dev/null | sed -n 's/.*(\([0-9.]*\)).*/\1/p')"; [ -n "$s" ] || { s="${SSH_CLIENT:-}"; s="${s%% *}"; }
+	_cand "$s" "지금 이 서버에 SSH 로 접속한 PC" OFF
+	while read -r one net; do
+		_cand "$one" "같은 망의 .1 — VMware 호스트 PC(노트북) 주소인 경우가 많음" OFF
+		_cand "$net" "이 서버와 같은 망 전체 (편하지만 넓게 열림)" OFF
+	done < <(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | python3 -c '
+import ipaddress, sys
+for l in sys.stdin:
+    n = ipaddress.ip_interface(l.strip()).network
+    if n.prefixlen < 31: print(n.network_address + 1, n)')
 }
 
 admin_login_ok() {   # $1 비밀번호 → 로그인되면 0
@@ -144,7 +178,7 @@ do_install() {
 		show_failure "설치" "$log"; return
 	fi
 	local extra=""
-	[ -n "$nets" ] && extra="$(open_access "$nets")"
+	if [ -n "$nets" ]; then ufw_offer; extra="$UFW_MSG$(open_access "$nets")\n"; fi
 	msg "설치 완료" "RKMSIEM 설치가 끝났습니다.\n\n웹 콘솔:\n$(urls)\n\n아이디 ${admin:-admin} / 비밀번호 admin\n⚠ 로그인하자마자 콘솔에서 'passwd' 로 바꾸세요 (12자 이상)\n\n${extra}${nets:+접속할 PC IP 는 콘솔 settings → 목록 → 차단 금지 에도 넣어 두세요.\n}전체 기록: $log"
 	staff_admin_offer
 	ask "자체 점검" "설치가 실제로 동작하는지 자체 점검(스모크 테스트)을 돌릴까요?\n\n가짜 SSH 공격 로그를 넣어 수집 → 탐지 → 사건 → 플레이북 → 차단 → 계정 잠금을 차례로 확인하고, 시험 기록은 끝나면 지웁니다. (약 1분)" "점검 시작" "나중에" && do_smoke
@@ -253,16 +287,56 @@ apply_update() {
 # ───────────────────────────── 외부 접속 ─────────────────────────────
 do_access() {
 	installed || { msg "외부 접속" "아직 설치되지 않았습니다."; return; }
-	local cur me nets
-	cur="$(ufw status 2>/dev/null | awk '$1 ~ /^(8088|8443)(\/tcp)?$/ && $2 == "ALLOW" {print "  " $3}' | sort -u)"
-	me="$(who -m 2>/dev/null | sed -n 's/.*(\([0-9.]*\)).*/\1/p')"
-	while :; do
-		nets="$(input "외부 접속 허용 (HTTPS)" "웹 콘솔(https 8443)·담당자 관리(https 8444)에 접속할 PC 의 IP 또는 대역 (쉼표로 여러 개)\n\n지금 허용된 곳:\n${cur:-  (없음)}" "$me")" || return
-		nets="$(valid_nets "$nets" 2>/tmp/rk.err)" && [ -n "$nets" ] && break
-		msg "입력 확인" "IP/대역 형식이 아닙니다: $(cat /tmp/rk.err)"
+	local out="" t
+	if ! tls_on || http_exposed; then
+		ask "외부 접속 — HTTPS" "다른 PC 에서 접속하려면 HTTPS 를 켭니다.\n\n· 접속 주소: https://<서버>:8443 (담당자 관리 8444)\n· 앱(8088·8090)은 이 서버 안에서만\n· 자체 서명 인증서 — 처음 접속 때 브라우저가 한 번 경고" "켜기" "취소" || return
+		dims; whiptail --title "외부 접속" --infobox "HTTPS 켜는 중… (nginx 설치·인증서 생성, 1분 안쪽)" 8 "$W"
+		out="$(tls_enable)" || { msg "외부 접속" "$out"; return; }
+		out+="\n"
+	fi
+	ufw_offer; out+="$UFW_MSG"
+	if ! ufw_active; then
+		msg "외부 접속" "${out}방화벽(ufw)이 꺼져 있어 같은 망 어디서나 https 8443·8444 에 접속할 수 있습니다.\n\n접속 주소:\n$(urls)"
+		return
+	fi
+	# 후보 고르기 (스페이스로 켜고 끄기) — 지금 허용된 곳은 켜진 채로 나오고, 끄면 허용이 지워짐
+	local args=() a b c sel now nets n
+	while IFS=$'\t' read -r a b c; do args+=("$a" "$b" "$c"); done < <(access_candidates)
+	args+=("직접입력" "목록에 없는 IP·대역 직접 입력" OFF)
+	dims
+	sel="$(whiptail --title "외부 접속 허용 (HTTPS 8443·8444)" --separate-output --ok-button "적용" --cancel-button "취소" --checklist \
+		"접속할 PC 를 스페이스로 고르고 엔터. 노트북에서 접속이 안 됐다면 '막힌 주소' 를 고르세요." "$H" "$W" "$LH" "${args[@]}" 3>&1 1>&2 2>&3)" || return
+	if grep -qx 직접입력 <<<"$sel"; then
+		while :; do
+			t="$(input "직접 입력" "허용할 IP 또는 대역 (쉼표로 여러 개)\n예) 192.168.100.1, 10.1.1.0/24")" || { t=""; break; }
+			t="$(valid_nets "$t" 2>/tmp/rk.err)" && break
+			msg "입력 확인" "IP/대역 형식이 아닙니다: $(cat /tmp/rk.err)"
+		done
+		sel="$(grep -vx 직접입력 <<<"$sel"; printf '%s\n' "$t")"
+	fi
+	nets="$(grep -v '^$' <<<"$sel" | while read -r n; do [ "$n" = Anywhere ] && echo Anywhere || valid_nets "$n"; done | sort -u)"
+	now="$(allowed_srcs)"
+	if [ -z "$nets" ] && [ -n "$now" ]; then
+		ask_no "외부 접속" "아무것도 고르지 않았습니다. 지금 허용된 곳을 모두 지울까요?\n(지우면 다른 PC 에서 콘솔에 접속할 수 없습니다)" "모두 지우기" "취소" || return
+	fi
+	for n in $now; do grep -qxF "$n" <<<"$nets" && continue
+		if [ "$n" = Anywhere ]; then ufw delete allow 8443/tcp >/dev/null; ufw delete allow 8444/tcp >/dev/null
+		else ufw delete allow from "$n" to any port 8443 proto tcp >/dev/null; ufw delete allow from "$n" to any port 8444 proto tcp >/dev/null; fi
+		out+="허용 해제: $n\n"
 	done
-	local out; out="$(open_access "$nets")"
-	msg "외부 접속" "${out:-바뀐 것이 없습니다.}\n접속 주소:\n$(urls)\n\nVMware NAT 포트 포워딩: 호스트 8443 → 이 서버:8443, 8444 → 이 서버:8444\n접속할 PC IP 는 콘솔 settings → 목록 → 차단 금지 에도 넣어 두세요.\n방화벽이 PC 별로 동작하는지는 콘솔 'dashboard doctor' 의 '접속 경로' 로 확인"
+	for n in $nets; do grep -qxF "$n" <<<"$now" && continue
+		ufw allow from "$n" to any port 8443 proto tcp >/dev/null; ufw allow from "$n" to any port 8444 proto tcp >/dev/null
+		out+="허용 추가: $n → 8443(콘솔) · 8444(담당자 관리)\n"
+	done
+	t="$(mktemp)"
+	{ printf '%b' "${out:-바뀐 것이 없습니다.\n}"; echo
+	  echo "지금 허용된 곳:"; allowed_srcs | sed 's/^/  /'; [ -n "$(allowed_srcs)" ] || echo "  (없음)"
+	  echo; echo "접속 주소:"; urls
+	  echo; echo "인증서 지문(SHA-256): $(tls_fp)"
+	  echo "  브라우저가 처음 한 번 경고하면 인증서 정보의 지문이 위와 같은지 확인하고 진행"
+	  echo; echo "접속할 PC IP 는 콘솔 settings → 목록 → 차단 금지 에도 넣어 두세요."
+	  echo "방화벽이 PC 별로 동작하는지는 콘솔 'dashboard doctor' 의 access_path 로 확인"; } > "$t"
+	showfile "외부 접속 — 결과" "$t"; rm -f "$t"
 }
 
 # ───────────────────────────── 상태 ─────────────────────────────
@@ -301,6 +375,7 @@ do_remove() {
 }
 
 # ───────────────────────────── 메인 ─────────────────────────────
+[ "${RKMSIEM_TUI_LIB:-}" = 1 ] && return 0 2>/dev/null     # 시험용: 함수만 불러오기
 case "${1:-}" in
 	--install) do_install; exit ;;
 	--smoke) do_smoke; exit ;;
