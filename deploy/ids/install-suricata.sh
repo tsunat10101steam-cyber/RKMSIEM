@@ -83,5 +83,5 @@ cat <<EOF
 
 완료.
   경보 보기:  sudo tail -f /var/log/suricata/eve.json | jq -c 'select(.event_type=="alert") | {src: .src_ip, sig: .alert.signature}'
-  다음 단계:  sudo ./install-ship.sh --siem http://10.0.0.53:8088   (RKMSIEM 으로 보내기)
+  다음 단계:  sudo ./install-ship.sh --siem https://10.0.0.53:8443 --fingerprint <지문>   (RKMSIEM 으로 보내기)
 EOF

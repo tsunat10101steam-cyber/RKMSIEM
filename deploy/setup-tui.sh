@@ -69,35 +69,32 @@ PY
 
 ufw_active() { command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; }
 
-# 다른 PC 에서 웹 콘솔(8088)·담당자 관리(8090) 접속 허용: 모든 NIC 에서 받고, 방화벽은 고른 곳만 연다
+tls_on() { [ -e /etc/nginx/sites-enabled/rkmsiem ] && [ -s "$ETC/tls/rkmsiem.crt" ]; }
+http_exposed() { [ "$(envval RKMSIEM_API__HOST "$ENVF")" = 0.0.0.0 ] && ! tls_on; }
+tls_fp() { openssl x509 -in "$ETC/tls/rkmsiem.crt" -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//'; }
+
+# 다른 PC 에서 웹 콘솔·담당자 관리 접속 허용: HTTPS(nginx, 8443·8444)로만 열고, 방화벽은 고른 곳만 연다.
+# 앱(8088·8090)은 이 서버 안(127.0.0.1)에서만 받는다 — 비밀번호·토큰·터미널 입력이 망에 평문으로 다니지 않게.
 open_access() {
-	local nets="$1" changed=0 out="" n
-	if grep -q '^RKMSIEM_API__HOST=' "$ENVF"; then
-		grep -q '^RKMSIEM_API__HOST=0\.0\.0\.0$' "$ENVF" || { sed -i 's/^RKMSIEM_API__HOST=.*/RKMSIEM_API__HOST=0.0.0.0/' "$ENVF"; changed=1; }
-	else
-		printf '# 다른 PC 에서 웹 콘솔 접속 (방화벽 ufw 로 허용한 곳만)\nRKMSIEM_API__HOST=0.0.0.0\n' >> "$ENVF"; changed=1
-	fi
-	if [ -f "$STAFFENV" ] && ! grep -q '^STAFF_HOST=0\.0\.0\.0$' "$STAFFENV"; then
-		sed -i 's/^STAFF_HOST=.*/STAFF_HOST=0.0.0.0/' "$STAFFENV"; changed=1
-	fi
-	if [ "$changed" = 1 ]; then
-		systemctl restart rkmsiem rkmsiem-staff 2>/dev/null
-		for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8088/readyz >/dev/null 2>&1 && break; sleep 1; done
-		out+="서비스가 모든 네트워크에서 접속을 받도록 바꿨습니다.\n"
+	local nets="$1" out="" n log="$LOGDIR/tls-$(date +%Y%m%d-%H%M%S).log"
+	if ! tls_on || http_exposed; then
+		if "$SRC/deploy/tls.sh" > "$log" 2>&1; then out+="HTTPS 를 켰습니다 (자체 서명 인증서 · 기록: $log).\n"
+		else out+="✘ HTTPS 켜기 실패 — $log 확인\n"; printf '%b' "$out"; return; fi
 	fi
 	if ! ufw_active && command -v ufw >/dev/null 2>&1; then
-		if ask "방화벽" "방화벽(ufw)이 꺼져 있어 같은 망의 모든 기기가 콘솔에 접속할 수 있습니다.\n\nufw 를 켜고 고른 곳만 허용할까요?\n(SSH 22번은 자동으로 허용해 접속이 끊기지 않습니다)" "켜기" "그대로"; then
+		if ask "방화벽" "방화벽(ufw)이 꺼져 있어 같은 망의 모든 기기가 콘솔 로그인 화면까지 올 수 있습니다.\n\nufw 를 켜고 고른 곳만 허용할까요?\n(SSH 22번은 자동으로 허용해 접속이 끊기지 않습니다)" "켜기" "그대로"; then
 			ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null
 			ufw --force enable >/dev/null && out+="방화벽(ufw)을 켰습니다 (SSH 허용).\n"
 		fi
 	fi
 	if ufw_active; then
 		for n in $nets; do
-			ufw allow from "$n" to any port 8088 proto tcp >/dev/null
-			ufw allow from "$n" to any port 8090 proto tcp >/dev/null
-			out+="허용: $n → 8088(콘솔) · 8090(담당자 관리)\n"
+			ufw allow from "$n" to any port 8443 proto tcp >/dev/null
+			ufw allow from "$n" to any port 8444 proto tcp >/dev/null
+			out+="허용: $n → 8443(콘솔) · 8444(담당자 관리)\n"
 		done
 	fi
+	out+="인증서 지문(SHA-256): $(tls_fp)\n브라우저가 처음 한 번 경고하면 인증서 정보의 지문이 위와 같은지 확인하고 진행하세요.\n"
 	printf '%b' "$out"
 }
 
@@ -108,8 +105,9 @@ admin_login_ok() {   # $1 비밀번호 → 로그인되면 0
 }
 
 urls() {
-	local ip host; host="$(envval RKMSIEM_API__HOST "$ENVF")"
-	if [ "$host" = 0.0.0.0 ]; then for ip in $(host_ips); do printf '  http://%s:8088\n' "$ip"; done
+	local ip
+	if tls_on; then for ip in $(host_ips); do printf '  https://%s:8443\n' "$ip"; done
+	elif http_exposed; then for ip in $(host_ips); do printf '  http://%s:8088  ⚠ 암호화 없음 — 메뉴 "외부 접속"으로 HTTPS 전환\n' "$ip"; done
 	else printf '  http://127.0.0.1:8088  (이 서버에서만 — 다른 PC 는 메뉴 "외부 접속")\n'; fi
 }
 
@@ -243,6 +241,10 @@ apply_update() {
 		local t; t="$(mktemp)"
 		{ echo "업데이트가 끝났습니다 (지금 $(pkg_ver || echo 원본))."; echo; echo "웹 콘솔:"; urls; echo; sed -n '/되돌릴 수/,$p' "$log"; echo; echo "전체 기록: $log"; } > "$t"
 		showfile "업데이트 완료" "$t"; rm -f "$t"
+		if http_exposed && ask "보안 — HTTPS 전환" "웹 콘솔이 지금 http(암호화 없음)로 망에 열려 있습니다.\n로그인 비밀번호 · 세션 토큰 · 웹 터미널에 치는 장비 비밀번호가 같은 망에서 그대로 보입니다.\n\n지금 HTTPS 로 바꿀까요?\n· 접속 주소가 https://<서버>:8443 (담당자 관리 8444) 으로 바뀝니다\n· 방화벽 허용은 그대로 옮겨집니다\n· VMware NAT 포트 포워딩도 8443·8444 로 바꿔야 합니다" "HTTPS 로 전환" "나중에"; then
+			local tl="$LOGDIR/tls-$(date +%Y%m%d-%H%M%S).log"
+			if "$SRC/deploy/tls.sh" > "$tl" 2>&1; then showfile "HTTPS 전환 완료" "$tl"; else show_failure "HTTPS 전환" "$tl"; fi
+		fi
 	else
 		show_failure "업데이트" "$log"
 	fi
@@ -252,15 +254,15 @@ apply_update() {
 do_access() {
 	installed || { msg "외부 접속" "아직 설치되지 않았습니다."; return; }
 	local cur me nets
-	cur="$(ufw status 2>/dev/null | awk '$1 ~ /^8088(\/tcp)?$/ && $2 == "ALLOW" {print "  " $3}' | sort -u)"
+	cur="$(ufw status 2>/dev/null | awk '$1 ~ /^(8088|8443)(\/tcp)?$/ && $2 == "ALLOW" {print "  " $3}' | sort -u)"
 	me="$(who -m 2>/dev/null | sed -n 's/.*(\([0-9.]*\)).*/\1/p')"
 	while :; do
-		nets="$(input "외부 접속 허용" "웹 콘솔(8088)·담당자 관리(8090)에 접속할 PC 의 IP 또는 대역 (쉼표로 여러 개)\n\n지금 허용된 곳:\n${cur:-  (없음)}" "$me")" || return
+		nets="$(input "외부 접속 허용 (HTTPS)" "웹 콘솔(https 8443)·담당자 관리(https 8444)에 접속할 PC 의 IP 또는 대역 (쉼표로 여러 개)\n\n지금 허용된 곳:\n${cur:-  (없음)}" "$me")" || return
 		nets="$(valid_nets "$nets" 2>/tmp/rk.err)" && [ -n "$nets" ] && break
 		msg "입력 확인" "IP/대역 형식이 아닙니다: $(cat /tmp/rk.err)"
 	done
 	local out; out="$(open_access "$nets")"
-	msg "외부 접속" "${out:-바뀐 것이 없습니다.}\n\n접속 주소:\n$(urls)\n\n접속할 PC IP 는 콘솔 settings → 목록 → 차단 금지 에도 넣어 두세요.\n(VMware NAT 포트 포워딩으로 들어오는 접속은 원래 PC 의 IP 로 보입니다)"
+	msg "외부 접속" "${out:-바뀐 것이 없습니다.}\n접속 주소:\n$(urls)\n\nVMware NAT 포트 포워딩: 호스트 8443 → 이 서버:8443, 8444 → 이 서버:8444\n접속할 PC IP 는 콘솔 settings → 목록 → 차단 금지 에도 넣어 두세요.\n방화벽이 PC 별로 동작하는지는 콘솔 'dashboard doctor' 의 '접속 경로' 로 확인"
 }
 
 # ───────────────────────────── 상태 ─────────────────────────────
@@ -272,9 +274,13 @@ do_status() {
 			for s in rkmsiem rkmsiem-staff; do printf '  %-15s %s\n' "$s" "$(systemctl is-active "$s" 2>/dev/null)"; done
 			curl -fsS http://127.0.0.1:8088/readyz >/dev/null 2>&1 && echo "  준비 상태       정상 (readyz)" || echo "  준비 상태       응답 없음 — journalctl -u rkmsiem -n 50"
 			echo; echo "■ 접속 주소"; urls
-			echo; echo "■ 듣는 포트"; ss -ltn 2>/dev/null | awk 'NR > 1 && $4 ~ /:(8088|8090)$/ {print "  " $4}'
-			echo; echo "■ 방화벽 (8088·8090)"
-			if ufw_active; then ufw status | awk '$1 ~ /^(8088|8090)(\/tcp)?$/ {print "  " $0}'; else echo "  ufw 꺼짐 (모든 곳에서 접속 가능)"; fi
+			echo; echo "■ HTTPS"
+			if tls_on; then echo "  켜짐 (nginx · 8443 콘솔 · 8444 담당자 관리)"; echo "  인증서 지문 $(tls_fp)"
+			elif http_exposed; then echo "  ⚠ 꺼짐 — 콘솔이 http 로 망에 열려 있음 (비밀번호가 평문). 메뉴 4 로 HTTPS 전환"
+			else echo "  꺼짐 (콘솔은 이 서버 안에서만)"; fi
+			echo; echo "■ 듣는 포트"; ss -ltn 2>/dev/null | awk 'NR > 1 && $4 ~ /:(8088|8090|8443|8444)$/ {print "  " $4}'
+			echo; echo "■ 방화벽 (8443·8444 · 예전 8088·8090)"
+			if ufw_active; then ufw status | awk '$1 ~ /^(8088|8090|8443|8444)(\/tcp)?$/ {print "  " $0}'; else echo "  ufw 꺼짐 (모든 곳에서 접속 가능)"; fi
 			echo; echo "■ 차단 테이블"; nft list set inet rkmsiem blocklist4 2>/dev/null | sed -n 's/^\s*elements = /  차단 중: /p' | head -3
 			nft list table inet rkmsiem >/dev/null 2>&1 && echo "  table inet rkmsiem 있음" || echo "  table inet rkmsiem 없음"
 			echo; echo "■ 버전"; echo "  $(dpkg-query -W -f='패키지 ${Version}' rkmsiem 2>/dev/null || echo "원본 $SRC")"
@@ -310,7 +316,7 @@ while :; do
 		1 "설치" \
 		2 "자체 점검 (스모크 테스트)" \
 		3 "업데이트 (받은 새 버전 적용)" \
-		4 "외부 접속 허용 (다른 PC 에서 웹 콘솔)" \
+		4 "외부 접속 허용 (HTTPS · 다른 PC 에서 웹 콘솔)" \
 		5 "상태 보기" \
 		6 "제거" 3>&1 1>&2 2>&3)" || break
 	case "$choice" in

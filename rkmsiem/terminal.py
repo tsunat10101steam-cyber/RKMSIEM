@@ -129,6 +129,7 @@ class TerminalManager:
         self.idle_sec = int(s.get("terminal.idle_timeout_sec", 900))
         self.max_sec = int(s.get("terminal.max_duration_sec", 14400))
         self.ports = set(s.get("terminal.allowed_ports", [22, 2222]))
+        self.require_mfa = bool(s.get("terminal.require_mfa", True))
         base = os.path.dirname(platform.db.path) if platform.db.path != ":memory:" else os.getcwd()
         self.dir = s.path("terminal.dir") if s.get("terminal.dir") else os.path.join(base, "terminal")
         self.sessions = {}

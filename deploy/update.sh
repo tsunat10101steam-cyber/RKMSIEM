@@ -41,6 +41,11 @@ ACCOUNT_OPT=""
 [ -x /usr/local/lib/rkmsiem/rkmsiem-account ] || ACCOUNT_OPT="--no-account-lock"   # 처음 설치 때 선택 유지
 SSH_CLIENT="${SSH_CLIENT:-}" "$SRC/deploy/install.sh" $ACCOUNT_OPT
 
+if grep -q '^RKMSIEM_API__HOST=0\.0\.0\.0$' /etc/rkmsiem/rkmsiem.env && [ ! -e /etc/nginx/sites-enabled/rkmsiem ]; then
+	echo
+	echo "⚠ 보안: 웹 콘솔이 http(암호화 없음)로 망에 열려 있습니다 — 비밀번호·토큰·웹 터미널 입력이 평문으로 다닙니다."
+	echo "  HTTPS 로 바꾸기: sudo $SRC/deploy/tls.sh   (접속 주소 https://<서버>:8443 · 방화벽 허용은 그대로 옮겨짐)"
+fi
 echo
 echo "업데이트 완료. 문제가 있으면 아래 명령으로 이전 버전으로 되돌릴 수 있습니다:"
 echo "  sudo systemctl stop rkmsiem rkmsiem-staff && sudo rm -rf /opt/rkmsiem /etc/rkmsiem && \\"

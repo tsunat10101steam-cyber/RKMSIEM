@@ -140,6 +140,50 @@ def run_checks(settings, platform=None):
         sys_tz = open(tzf, encoding="utf-8").read().strip()
         out.append(_c("timezone", "ok" if sys_tz == settings.get("timezone") else "warn",
                       f"서버 {sys_tz} / 설정 {settings.get('timezone')} (auth.log 전통 형식 해석 기준)"))
+    out += security_checks(settings, p)
     ready, checks = p.readiness()
     out.append(_c("readiness", "ok" if ready else "fail", ", ".join(f"{k}={v}" for k, v in checks.items() if k in ("database", "pipeline_worker", "soar_worker", "queue_ok"))))
+    return out
+
+
+def security_checks(settings, p):
+    """접속 보안: HTTPS · 비밀번호 변경 대기 · 2단계 인증 · NAT 경유 여부(방화벽이 PC 별로 동작하는지)."""
+    import ipaddress
+    import json
+    out = []
+    host, proxied = str(settings.get("api.host", "127.0.0.1")), int(settings.get("api.trusted_proxies", 0) or 0)
+    try:
+        local = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        local = host == "localhost"
+    if not local and not proxied:
+        out.append(_c("https", "fail", f"웹 콘솔이 http({host}:{settings.get('api.port')})로 망에 열려 있음 — 비밀번호·토큰·터미널 입력이 평문. "
+                                       "sudo rkmsiem-setup → 외부 접속 허용 (HTTPS 전환)"))
+    else:
+        out.append(_c("https", "ok", "nginx HTTPS(8443) 뒤 — 앱은 127.0.0.1 에서만" if proxied else "콘솔은 이 서버 안에서만 (외부 접속 없음)"))
+    must = [r["username"] for r in p.db.all("SELECT username FROM users WHERE active=1 AND must_change_pw=1")]
+    out.append(_c("first_password", "warn" if must else "ok",
+                  f"처음 받은 비밀번호를 아직 안 바꾼 계정: {', '.join(must)}" if must else "모든 계정이 자기 비밀번호 사용"))
+    roles = (p.config.get("rbac") or {}).get("roles", {})
+    strong = {k for k, v in roles.items() if {"users:write", "terminal:use"} & set(v.get("permissions", []))}
+    nomfa = [r["username"] for r in p.db.all("SELECT username, role FROM users WHERE active=1 AND totp_enabled=0") if r["role"] in strong]
+    out.append(_c("mfa", "warn" if nomfa else "ok",
+                  f"2단계 인증이 꺼진 관리자 계정: {', '.join(nomfa)} — 로그인 후 mfa setup" if nomfa else "관리자 계정 모두 2단계 인증 사용"))
+    clients = []
+    for r in p.db.all("SELECT detail FROM audit_log WHERE action='auth.login' ORDER BY id DESC LIMIT 50"):
+        try:
+            c = json.loads(r["detail"] or "{}").get("client")
+        except ValueError:
+            c = None
+        if c and c not in ("127.0.0.1", "::1"):
+            clients.append(c)
+    if clients:
+        from .topology import local_view
+        _, gws, _ = local_view()
+        via = sorted({c for c in clients if c in gws})
+        if via and len(via) == len(set(clients)):
+            out.append(_c("access_path", "warn", f"최근 로그인이 모두 게이트웨이 {', '.join(via)} 에서 옴 (VMware NAT 포트 포워딩 등) — "
+                                                 "방화벽의 'PC 별 허용'이 사실상 'NAT 뒤 모두 허용'. 호스트 PC 방화벽에서 포워딩 포트를 접속할 PC 로만 제한하거나 VMware 브리지 모드 사용"))
+        else:
+            out.append(_c("access_path", "ok", f"최근 로그인 출발지 {', '.join(sorted(set(clients))[:5])} — PC 주소가 그대로 보임 (방화벽 PC 별 허용 유효)"))
     return out

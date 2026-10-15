@@ -738,3 +738,9 @@ tbody tr { transform-origin: top; }
 .tw-body .xterm { height: 100%; }
 .tw-foot { padding: 6px 10px; border-top: 1px solid var(--line); font: 12px var(--ko); display: flex; gap: 10px; align-items: center; justify-content: space-between; }
 @media (max-width: 640px) { .tw, .tw.max { left: 0 !important; top: 0 !important; width: 100vw; height: 100dvh; border-radius: 0; } .tw-h { cursor: default; } }
+
+/* ===================== 2단계 인증 등록 (mfa setup) ===================== */
+.mfa-box { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; line-height: 1.9; }
+.mfa-qr { width: 196px; flex: none; background: #fff; border-radius: 8px; padding: 4px; }
+.mfa-qr svg { display: block; width: 100%; height: auto; }
+.mfa-key { font: 600 14px var(--mono); letter-spacing: .06em; color: var(--accent); background: var(--panel-2); padding: 2px 8px; border-radius: 4px; user-select: all; }

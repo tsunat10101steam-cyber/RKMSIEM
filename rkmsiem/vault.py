@@ -82,6 +82,16 @@ class Vault:
         if self.audit:
             self.audit.record(actor, "secret.set", "secret", name, None, {"length": len(value)})
 
+    def encrypt(self, text):
+        if not self._f:
+            raise VaultError(self.error or "암호화를 쓸 수 없습니다")
+        return self._f.encrypt(text.encode()).decode()
+
+    def decrypt(self, token):
+        if not self._f:
+            raise VaultError(self.error or "암호화를 쓸 수 없습니다")
+        return self._f.decrypt(token.encode()).decode()
+
     def clear(self, name, actor):
         if name not in NAMES:
             raise VaultError(f"알 수 없는 항목: {name}")

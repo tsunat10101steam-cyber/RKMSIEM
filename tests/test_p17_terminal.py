@@ -28,7 +28,7 @@ def test_wired_reachability():
 
 @pytest.fixture
 def ctx(tmp_path, config_dir):
-    p = Platform(load_settings(config_dir, overrides={"database.path": str(tmp_path / "t.db")}))
+    p = Platform(load_settings(config_dir, overrides={"database.path": str(tmp_path / "t.db"), "terminal.require_mfa": False}))
     p.terminal.argv = lambda ip, login, port, legacy=False: ["/bin/sh", "-c", f"echo READY {login}@{ip}:{port}{' legacy' if legacy else ''}; read x; echo got:$x; sleep 30"]
     app = create_app(p)
     auth = app.extensions["rkmsiem_auth"]

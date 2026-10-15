@@ -5,7 +5,8 @@
   STAFF_HOST/PORT     기본 127.0.0.1:8090
   STAFF_SYNC_KEYS     연동 키 (쉼표 구분) — RKMSIEM 의 RKMSIEM_STAFF_SYNC_KEY 와 같은 값
   STAFF_NOTIFY_URL    (선택) 명단이 바뀌면 알릴 주소 — 예: http://127.0.0.1:8088/api/staff/hook (받는 쪽이 다시 가져감)
-  STAFF_CONSOLE_URL   (선택) 화면의 'RKMSIEM 콘솔' 링크 (기본: 같은 호스트의 8088)
+  STAFF_CONSOLE_URL   (선택) 화면의 'RKMSIEM 콘솔' 링크 (기본: 같은 호스트의 8088, https 면 8443)
+  STAFF_TRUSTED_PROXIES  nginx(HTTPS) 뒤에서 운영하면 1 — X-Forwarded-For 로 접속 IP 를 알아냄 (로그인 횟수 제한용)
 """
 import functools
 import hmac
@@ -43,7 +44,8 @@ def env_config(environ=None):
             "host": e.get("STAFF_HOST", "127.0.0.1"), "port": int(e.get("STAFF_PORT", "8090")),
             "sync_keys": [k.strip() for k in (e.get("STAFF_SYNC_KEYS") or "").split(",") if k.strip()],
             "notify_url": e.get("STAFF_NOTIFY_URL", ""), "console_url": e.get("STAFF_CONSOLE_URL", ""),
-            "token_ttl": int(e.get("STAFF_TOKEN_TTL_SEC", "28800")), "login_per_min": int(e.get("STAFF_LOGIN_RATE_PER_MIN", "10"))}
+            "token_ttl": int(e.get("STAFF_TOKEN_TTL_SEC", "28800")), "login_per_min": int(e.get("STAFF_LOGIN_RATE_PER_MIN", "10")),
+            "trusted_proxies": int(e.get("STAFF_TRUSTED_PROXIES", "0") or 0)}
 
 
 class _Limiter:
@@ -65,6 +67,9 @@ def create_app(cfg, store=None):
     st = store or Store(cfg["db"])
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
+    if cfg.get("trusted_proxies"):
+        from werkzeug.middleware.proxy_fix import ProxyFix
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=cfg["trusted_proxies"], x_proto=cfg["trusted_proxies"])
     app.extensions["staff_store"] = st
     limiter = _Limiter(cfg["login_per_min"])
     sync_hashes = [sha(k) for k in cfg["sync_keys"]]

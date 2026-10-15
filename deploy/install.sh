@@ -164,6 +164,11 @@ if ! grep -q '^RKMSIEM_STAFF_SYNC_KEY=' "$ETC/rkmsiem.env"; then
 	printf '# 담당자 관리 앱 연동 키 (staff.env 의 STAFF_SYNC_KEYS 와 같은 값)\nRKMSIEM_STAFF_SYNC_KEY=%s\n' \
 		"$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')" >> "$ETC/rkmsiem.env"
 fi
+# root 전용 점검 키 (설치 자가 점검·smoketest 용 — 이 서버 안에서만 통함, 첫 비밀번호 변경·2단계 인증과 무관)
+if ! grep -q '^RKMSIEM_LOCAL_TOKEN=' "$ETC/rkmsiem.env"; then
+	printf '# root 전용 점검 키 (이 서버 안 127.0.0.1 요청만 · 감사 로그에 root@local 로 남음)\nRKMSIEM_LOCAL_TOKEN=%s\n' \
+		"$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')" >> "$ETC/rkmsiem.env"
+fi
 grep -q '^RKMSIEM_STAFF__URL=' "$ETC/rkmsiem.env" || echo 'RKMSIEM_STAFF__URL=http://127.0.0.1:8090' >> "$ETC/rkmsiem.env"
 chown root:root "$ETC/rkmsiem.env"; chmod 0600 "$ETC/rkmsiem.env"
 STAFF_KEY="$(sed -n 's/^RKMSIEM_STAFF_SYNC_KEY=//p' "$ETC/rkmsiem.env" | tail -1)"
@@ -267,28 +272,28 @@ STAFF_ADMINS="$(sudo -u rkmsiem python3 -c 'import sqlite3,sys;print(sqlite3.con
 
 step "자가 점검 (서비스 권한으로)"
 set -a; . "$ETC/rkmsiem.env"; set +a
-TOKEN="$(curl -fsS -H 'Content-Type: application/json' -d "{\"username\":\"$RKMSIEM_ADMIN_USER\",\"password\":\"$RKMSIEM_ADMIN_PASSWORD\"}" http://127.0.0.1:8088/api/auth/login 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])' || true)"
-if [ -n "$TOKEN" ]; then
-	curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/system/doctor | python3 -c '
+if [ -n "${RKMSIEM_LOCAL_TOKEN:-}" ]; then
+	curl -fsS -H "X-RKMSIEM-Local: $RKMSIEM_LOCAL_TOKEN" http://127.0.0.1:8088/api/system/doctor | python3 -c '
 import sys, json
 r = json.load(sys.stdin)
 for c in r["checks"]:
     print(" ", {"ok":"✔","warn":"!","fail":"✘"}[c["status"]], c["status"].ljust(4), c["check"].ljust(22), c["detail"])'
 else
-	echo "  (관리자 비밀번호가 바뀌어 자동 점검을 건너뜀 — 웹 콘솔에서 'doctor')"
+	echo "  (점검 키가 없어 자동 점검을 건너뜀 — 웹 콘솔에서 'dashboard doctor')"
 fi
 
 cat <<EOF
 
 ────────────────────────────────────────────────────────────
  RKMSIEM 설치 완료
-  웹 콘솔 : http://127.0.0.1:8088  (외부 접속은 nginx+TLS: $ETC/nginx-rkmsiem.conf)
+  웹 콘솔 : http://127.0.0.1:8088  (다른 PC 에서는 HTTPS: sudo rkmsiem-setup → 외부 접속 허용, 또는 sudo $SRC/deploy/tls.sh)
             원격에서 볼 때: ssh -L 8088:127.0.0.1:8088 <이 서버>
   모드    : $( [ "$LIVE" = 1 ] && echo "live (승인된 차단·잠금이 실제 실행)" || echo "simulate (실제 조치 안 함 — 확인 후 $ETC/config/settings.yaml 의 soar.mode 를 live 로)")
   설정    : $ETC/config   비밀: $ETC/rkmsiem.env   데이터: $DATA
   로그    : journalctl -u rkmsiem -f
   동작 검증: sudo $SRC/deploy/smoketest.sh
-  담당자 관리: http://<이 서버>:$STAFF_PORT  (서비스 rkmsiem-staff · 로그 journalctl -u rkmsiem-staff · DB $STAFF_DB)
+  담당자 관리: 이 서버 안 http://127.0.0.1:$STAFF_PORT · HTTPS 를 켜면 https://<이 서버>:8444  (서비스 rkmsiem-staff · DB $STAFF_DB)
+  첫 로그인: 아이디 $ADMIN_USER / 비밀번호 admin → 바로 새 비밀번호(12자 이상)를 정하게 됩니다 · 그다음 콘솔에서 mfa setup
 EOF
 if [ "${STAFF_ADMINS:-0}" = 0 ]; then
 	echo "  담당자 관리 앱 관리자가 아직 없습니다. 아래 명령으로 만드세요 (비밀번호는 화면에 안 보이게 두 번 입력):"

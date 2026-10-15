@@ -71,7 +71,7 @@ def create_app(platform):
     s = p.settings
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = s.get("api.max_body_kb", 1024) * 1024
-    auth = AuthService(p.db, p.config, p.audit, s)
+    auth = AuthService(p.db, p.config, p.audit, s, vault=p.vault)
     app.extensions["rkmsiem_auth"] = auth
     locator_cache = {}
 
@@ -131,14 +131,23 @@ def create_app(platform):
             resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    MUST_CHANGE_OK = {"/api/me", "/api/me/password", "/api/auth/logout"}     # 비밀번호를 바꾸기 전에 쓸 수 있는 것
+
     def require(perm):
         def deco(fn):
             @functools.wraps(fn)
             def wrapper(*a, **kw):
                 h = request.headers.get("Authorization", "")
                 user = auth.resolve(h[7:] if h.startswith("Bearer ") else None)
+                if not user and request.headers.get("X-RKMSIEM-Local"):
+                    user = auth.local_user(request.headers["X-RKMSIEM-Local"], request.remote_addr)
                 if not user:
                     return jsonify({"error": "unauthorized"}), 401
+                if user["id"] is None and request.path.startswith(("/api/me/", "/api/stream")):     # root 점검 키는 개인 설정 없음
+                    return jsonify({"error": "forbidden", "details": "점검 키로는 쓸 수 없는 기능"}), 403
+                if user.get("must_change") and request.path not in MUST_CHANGE_OK:
+                    return jsonify({"error": "password_change_required",
+                                    "details": "처음 받은 비밀번호입니다 — passwd 로 새 비밀번호(12자 이상)를 정한 뒤 다시 로그인하세요"}), 403
                 if perm and perm not in user["permissions"]:
                     p.audit.record(user["username"], "auth.forbidden", "api", request.path, None, {"perm": perm, "method": request.method})
                     return jsonify({"error": "forbidden", "required": perm}), 403
@@ -199,6 +208,16 @@ def create_app(platform):
             token, info = auth.login(b["username"], b["password"], client())
         except AuthError as e:
             return jsonify({"error": str(e)}), (429 if str(e) == "rate_limited" else 401)
+        return jsonify(dict(info, token=token) if token else info)     # 2단계 인증: mfa_ticket → /api/auth/mfa
+
+    @app.post("/api/auth/mfa")
+    def login_mfa():
+        b = body({"type": "object", "required": ["ticket", "code"], "additionalProperties": False,
+                  "properties": {"ticket": {"type": "string", "maxLength": 128}, "code": {"type": "string", "maxLength": 16}}})
+        try:
+            token, info = auth.login_mfa(b["ticket"], b["code"], client())
+        except AuthError as e:
+            return jsonify({"error": str(e)}), (429 if str(e) == "rate_limited" else 401)
         return jsonify(dict(info, token=token))
 
     @app.post("/api/auth/logout")
@@ -212,6 +231,7 @@ def create_app(platform):
     @require(None)
     def me():
         return jsonify({"username": g.user["username"], "role": g.user["role"], "permissions": sorted(g.user["permissions"]),
+                        "must_change_password": g.user["must_change"], "mfa_enabled": g.user["mfa"],
                         "mode": s.get("soar.mode"), "env": s.get("env")})
 
     # ------------------------------------------------------------ 실시간
@@ -761,7 +781,7 @@ def create_app(platform):
         b = body({"type": "object", "required": ["username", "password", "role"], "additionalProperties": False,
                   "properties": {"username": {"type": "string"}, "password": {"type": "string"}, "role": {"type": "string"}}})
         try:
-            auth.create_user(b["username"], b["password"], b["role"], actor())
+            auth.create_user(b["username"], b["password"], b["role"], actor(), must_change=True)    # 임시 비밀번호 → 첫 로그인 때 본인이 바꿈
         except ValueError as e:
             raise ApiError(400, str(e))
         except Exception as e:
@@ -832,6 +852,51 @@ def create_app(platform):
         except ValueError as e:
             raise ApiError(400, str(e))
         return jsonify({"ok": True, "note": "모든 세션이 로그아웃되었습니다. 다시 로그인하세요."})
+
+    # 2단계 인증 (본인)
+    @app.get("/api/me/mfa")
+    @require(None)
+    def mfa_status():
+        return jsonify(dict(auth.totp_status(g.user), required_for_terminal=p.terminal.require_mfa))
+
+    @app.post("/api/me/mfa/setup")
+    @require(None)
+    def mfa_setup():
+        try:
+            return jsonify(auth.totp_begin(g.user))
+        except ValueError as e:
+            raise ApiError(409, str(e))
+
+    @app.post("/api/me/mfa/enable")
+    @require(None)
+    def mfa_enable():
+        b = body({"type": "object", "required": ["code"], "additionalProperties": False, "properties": {"code": {"type": "string", "maxLength": 16}}})
+        try:
+            auth.totp_enable(g.user, b["code"])
+        except AuthError:
+            return jsonify({"error": "invalid_code", "details": "코드가 맞지 않습니다 — 휴대폰 시간이 맞는지 확인하세요"}), 400
+        except ValueError as e:
+            raise ApiError(409, str(e))
+        return jsonify({"ok": True})
+
+    @app.post("/api/me/mfa/disable")
+    @require(None)
+    def mfa_disable():
+        b = body({"type": "object", "required": ["password", "code"], "additionalProperties": False,
+                  "properties": {"password": {"type": "string", "maxLength": 256}, "code": {"type": "string", "maxLength": 16}}})
+        try:
+            auth.totp_disable(g.user, b["password"], b["code"])
+        except AuthError:
+            return jsonify({"error": "invalid_credentials", "details": "비밀번호 또는 코드가 맞지 않습니다"}), 400
+        except ValueError as e:
+            raise ApiError(409, str(e))
+        return jsonify({"ok": True})
+
+    @app.post("/api/users/<name>/mfa/reset")
+    @require("users:write")
+    def user_mfa_reset(name):
+        auth.totp_reset(name, actor())
+        return jsonify({"ok": True})
 
     @app.get("/api/blocklist")
     @require("runs:read")
@@ -1012,6 +1077,8 @@ def create_app(platform):
                                  "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                                  "cols": {"type": "integer", "minimum": 20, "maximum": 500}, "rows": {"type": "integer", "minimum": 5, "maximum": 300},
                                  "legacy": {"type": "boolean"}}})
+        if p.terminal.require_mfa and not g.user["mfa"]:
+            raise ApiError(403, "mfa_required", "웹 터미널은 2단계 인증을 켠 계정만 쓸 수 있습니다 — 콘솔에서 mfa setup")
         sess = p.terminal.open(actor(), b["ip"], b["login"], b.get("port", 22), b.get("cols", 100), b.get("rows", 30), b.get("legacy", False))
         return jsonify(sess.info()), 201
 

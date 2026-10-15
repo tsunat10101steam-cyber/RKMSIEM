@@ -4,7 +4,8 @@
   python -m rkmsiem doctor                       설치·권한·수집 조건 자가 점검 (서비스 안에서의 점검은 /api/system/doctor)
   python -m rkmsiem check-config                 설정 전체 검증 (임시 DB 사용, 운영 DB 변경 없음)
   python -m rkmsiem user add <이름> <역할>       사용자 추가 (비밀번호: 입력 또는 RKMSIEM_NEW_PASSWORD)
-  python -m rkmsiem user passwd <이름>           비밀번호 재설정 (관리자용, 모든 세션 로그아웃)
+  python -m rkmsiem user passwd <이름>           비밀번호 재설정 (관리자용, 모든 세션 로그아웃 · 다음 로그인 때 본인이 바꿈)
+  python -m rkmsiem user mfa-reset <이름>        2단계 인증 끄기 (휴대폰 분실 등 — 다시 mfa setup 해야 함)
   python -m rkmsiem reset test|all [--dry-run]    데이터 초기화 (웹 콘솔 settings → 데이터 탭과 같음)
   python -m rkmsiem gen-sample                   samples/auth.log 예제(가상) 데이터 생성
   python -m rkmsiem verify-audit                 감사 로그 해시 체인 검증
@@ -28,7 +29,7 @@ def main(argv=None):
     sub.add_parser("doctor")
     sub.add_parser("check-config")
     us = sub.add_parser("user")
-    us.add_argument("action", choices=["add", "passwd"])
+    us.add_argument("action", choices=["add", "passwd", "mfa-reset"])
     us.add_argument("username")
     us.add_argument("role", nargs="?")
     sub.add_parser("gen-sample")
@@ -98,7 +99,11 @@ def main(argv=None):
 
     if a.cmd == "user":
         from .auth import AuthService
-        auth = AuthService(p.db, p.config, p.audit, s)
+        auth = AuthService(p.db, p.config, p.audit, s, vault=p.vault)
+        if a.action == "mfa-reset":
+            auth.totp_reset(a.username, os.environ.get("SUDO_USER") or "cli")
+            print(f"2단계 인증 해제: {a.username} (모든 세션 로그아웃 — 로그인 후 mfa setup 으로 다시 등록)")
+            return 0
         pw = os.environ.get("RKMSIEM_NEW_PASSWORD") or getpass.getpass("new password (12자 이상): ")
         if a.action == "add":
             if not a.role:

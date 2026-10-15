@@ -42,6 +42,7 @@ api:
 
 terminal:                       # 웹 터미널 — 토폴로지에서 SIEM 과 와이어로 이어진 기기에만 SSH (권한 terminal:use)
   enabled: true
+  require_mfa: true             # 2단계 인증(mfa setup)을 켠 계정만 터미널 사용
   allowed_ports: [22, 2222]
   max_sessions_per_user: 3
   idle_timeout_sec: 900         # 입력이 없으면 종료

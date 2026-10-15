@@ -5,6 +5,8 @@
 - SSE 스트림: EventSource 가 헤더를 못 보내므로 1회용·60초짜리 티켓을 따로 발급 (세션 토큰을 URL 에 싣지 않음)
 - 수집 API 키: 환경 변수 RKMSIEM_INGEST_KEYS (쉼표 구분). 소스 코드/설정 파일에 두지 않음
 - 권한 표는 config/rbac.yaml — 백엔드의 모든 API 에서 검사
+- 첫 관리자(admin/admin)·관리자가 재설정한 임시 비밀번호·12자 미만 비밀번호 → 로그인 직후 비밀번호 변경 전까지 다른 API 거부
+- 2단계 인증(TOTP): 켠 계정은 비밀번호 다음에 OTP 코드까지 맞아야 세션 발급. 비밀 값은 vault 로 암호화해 DB 에 저장
 """
 import base64
 import hashlib
@@ -13,6 +15,8 @@ import os
 import secrets
 import threading
 import time
+
+from . import totp
 
 ITER = 600_000
 MIN_PASSWORD = 12
@@ -61,9 +65,10 @@ class RateLimiter:
 
 
 class AuthService:
-    def __init__(self, db, config, audit, settings):
-        self.db, self.config, self.audit, self.settings = db, config, audit, settings
+    def __init__(self, db, config, audit, settings, vault=None):
+        self.db, self.config, self.audit, self.settings, self.vault = db, config, audit, settings, vault
         self.limiter = RateLimiter(settings.get("api.login_rate_per_min", 10))
+        self._mfa, self._mfa_lock = {}, threading.Lock()          # 비밀번호는 맞고 OTP 를 기다리는 로그인 (5분 · 5번까지)
         keys = (settings.secret("RKMSIEM_INGEST_KEYS") or "").split(",")
         self._ingest = {_sha(k.strip()) for k in keys if k.strip()}
 
@@ -74,7 +79,7 @@ class AuthService:
     def permissions(self, role):
         return set((self.roles().get(role) or {}).get("permissions", []))
 
-    def create_user(self, username, password, role, actor, allow_short=False):
+    def create_user(self, username, password, role, actor, allow_short=False, must_change=False):
         if not username or not username.replace("_", "").replace("-", "").replace(".", "").isalnum() or len(username) > 64:
             raise ValueError("사용자 이름은 영문/숫자/._- 64자 이하")
         if role not in self.roles():
@@ -82,8 +87,8 @@ class AuthService:
         if not password or (len(password) < MIN_PASSWORD and not allow_short):
             raise ValueError(f"비밀번호는 {MIN_PASSWORD}자 이상")
         with self.db.tx() as c:
-            cur = c.execute("INSERT INTO users (username, pw_hash, role, active, created_at) VALUES (?,?,?,1,?)",
-                            (username, hash_password(password), role, time.time()))
+            cur = c.execute("INSERT INTO users (username, pw_hash, role, active, created_at, must_change_pw) VALUES (?,?,?,1,?,?)",
+                            (username, hash_password(password), role, time.time(), int(must_change)))
             self.audit.record(actor, "user.create", "user", username, None, {"role": role}, conn=c)
         return cur.lastrowid
 
@@ -103,14 +108,17 @@ class AuthService:
             raise AuthError("invalid_credentials")
         if len(new or "") < MIN_PASSWORD:
             raise ValueError(f"비밀번호는 {MIN_PASSWORD}자 이상")
+        if require_current and verify_password(new, u["pw_hash"]):
+            raise ValueError("지금 비밀번호와 다른 비밀번호를 쓰세요")
         with self.db.tx() as c:
-            c.execute("UPDATE users SET pw_hash=? WHERE id=?", (hash_password(new), u["id"]))
+            # 본인이 바꾸면 변경 요구 해제, 관리자가 재설정한 임시 비밀번호면 다음 로그인 때 본인이 바꾸게
+            c.execute("UPDATE users SET pw_hash=?, must_change_pw=? WHERE id=?", (hash_password(new), int(not require_current), u["id"]))
             c.execute("DELETE FROM tokens WHERE user_id=?", (u["id"],))       # 다른 세션 모두 로그아웃
             self.audit.record(actor, "user.password_change", "user", username, conn=c)
 
     def list_users(self):
         """로그인 계정만 (이름·팀·연락처는 담당자 관리 앱의 명단에 있음)."""
-        return self.db.all("SELECT id, username, role, active, created_at FROM users ORDER BY id")
+        return self.db.all("SELECT id, username, role, active, created_at, totp_enabled AS mfa, must_change_pw AS must_change FROM users ORDER BY id")
 
     def _admins(self, c, exclude=None):
         """users:write 권한을 가진 활성 사용자 수 (마지막 관리자를 잃지 않게)."""
@@ -157,11 +165,12 @@ class AuthService:
         if not pw:
             return None
         name = self.settings.secret("RKMSIEM_ADMIN_USER", "admin")
-        self.create_user(name, pw, "admin", "bootstrap", allow_short=True)
+        self.create_user(name, pw, "admin", "bootstrap", allow_short=True, must_change=True)
         return name
 
     # ---------- 세션 ----------
     def login(self, username, password, client):
+        """비밀번호 확인. 2단계 인증을 켠 계정이면 세션 대신 OTP 대기표를 돌려준다 → login_mfa."""
         if not self.limiter.allow(client):
             self.audit.record(username or "?", "auth.rate_limited", "user", username, None, {"client": client})
             raise AuthError("rate_limited")
@@ -170,24 +179,113 @@ class AuthService:
         if not u or not ok or not u["active"]:
             self.audit.record(username or "?", "auth.login_failed", "user", username, None, {"client": client})
             raise AuthError("invalid_credentials")
+        if len(password) < MIN_PASSWORD and not u["must_change_pw"]:      # 예전 설치의 admin/admin 등 → 바꾸게
+            self.db.execute("UPDATE users SET must_change_pw=1 WHERE id=?", (u["id"],))
+        if u["totp_enabled"]:
+            ticket = secrets.token_urlsafe(24)
+            with self._mfa_lock:
+                now = time.time()
+                self._mfa = {k: v for k, v in self._mfa.items() if v["exp"] > now}
+                self._mfa[_sha(ticket)] = {"uid": u["id"], "exp": now + 300, "tries": 0}
+            self.audit.record(username, "auth.password_ok", "user", username, None, {"client": client, "mfa": "pending"})
+            return None, {"mfa_required": True, "mfa_ticket": ticket}
+        return self._issue(u, client, mfa=False)
+
+    def login_mfa(self, ticket, code, client):
+        if not self.limiter.allow("mfa:" + client):
+            raise AuthError("rate_limited")
+        with self._mfa_lock:
+            t = self._mfa.get(_sha(ticket or ""))
+            if not t or t["exp"] < time.time() or t["tries"] >= 5:
+                self._mfa.pop(_sha(ticket or ""), None)
+                raise AuthError("mfa_expired")
+            t["tries"] += 1
+        u = self.db.one("SELECT * FROM users WHERE id=?", (t["uid"],))
+        step = self._check_code(u, code) if u and u["active"] and u["totp_enabled"] else None
+        if step is None:
+            self.audit.record(u["username"] if u else "?", "auth.mfa_failed", "user", u["username"] if u else None, None, {"client": client})
+            raise AuthError("invalid_code")
+        with self._mfa_lock:
+            self._mfa.pop(_sha(ticket), None)
+        self.db.execute("UPDATE users SET totp_last_step=? WHERE id=?", (step, u["id"]))
+        return self._issue(u, client, mfa=True)
+
+    def _issue(self, u, client, mfa):
         token = secrets.token_urlsafe(32)
         ttl = self.settings.get("api.token_ttl_sec", 28800)
         self.db.execute("INSERT INTO tokens (token_hash, user_id, kind, expires_at, created_at) VALUES (?,?,?,?,?)",
                         (_sha(token), u["id"], "session", time.time() + ttl, time.time()))
         self.db.execute("DELETE FROM tokens WHERE expires_at < ?", (time.time(),))
-        self.audit.record(username, "auth.login", "user", username, None, {"client": client})
-        return token, {"username": u["username"], "role": u["role"], "permissions": sorted(self.permissions(u["role"])), "expires_in": ttl}
+        self.audit.record(u["username"], "auth.login", "user", u["username"], None, {"client": client, "mfa": mfa})
+        must = bool(self.db.scalar("SELECT must_change_pw FROM users WHERE id=?", (u["id"],)))
+        return token, {"username": u["username"], "role": u["role"], "permissions": sorted(self.permissions(u["role"])), "expires_in": ttl,
+                       "must_change_password": must}
+
+    # ---------- 2단계 인증 (TOTP) ----------
+    def _check_code(self, u, code):
+        try:
+            secret = self.vault.decrypt(u["totp_secret"])
+        except Exception:     # noqa: BLE001 — 암호화 키가 바뀐 경우 등
+            return None
+        return totp.verify(secret, code, u["totp_last_step"])
+
+    def totp_status(self, user):
+        r = self.db.one("SELECT totp_enabled, totp_secret FROM users WHERE id=?", (user["id"],))
+        return {"enabled": bool(r["totp_enabled"]), "pending": bool(r["totp_secret"]) and not r["totp_enabled"]}
+
+    def totp_begin(self, user):
+        """새 비밀 값을 만들어 '대기' 로 저장 → 앱에 등록 후 totp_enable 로 코드 확인해야 켜짐."""
+        if not self.vault or not self.vault.ready:
+            raise ValueError("암호화 키(RKMSIEM_SECRET_KEY)가 없어 2단계 인증을 쓸 수 없습니다")
+        if self.totp_status(user)["enabled"]:
+            raise ValueError("이미 켜져 있습니다 — 다시 등록하려면 먼저 끄세요")
+        secret = totp.new_secret()
+        self.db.execute("UPDATE users SET totp_secret=?, totp_last_step=NULL WHERE id=?", (self.vault.encrypt(secret), user["id"]))
+        return {"secret": secret, "uri": totp.uri(secret, user["username"])}
+
+    def totp_enable(self, user, code):
+        u = self.db.one("SELECT * FROM users WHERE id=?", (user["id"],))
+        if u["totp_enabled"] or not u["totp_secret"]:
+            raise ValueError("먼저 등록(setup)을 시작하세요")
+        step = self._check_code(u, code)
+        if step is None:
+            raise AuthError("invalid_code")
+        with self.db.tx() as c:
+            c.execute("UPDATE users SET totp_enabled=1, totp_last_step=? WHERE id=?", (step, u["id"]))
+            self.audit.record(u["username"], "user.mfa_enable", "user", u["username"], conn=c)
+
+    def totp_disable(self, user, password, code):
+        u = self.db.one("SELECT * FROM users WHERE id=?", (user["id"],))
+        if not u["totp_enabled"]:
+            raise ValueError("2단계 인증이 꺼져 있습니다")
+        if not verify_password(password or "", u["pw_hash"]) or self._check_code(u, code) is None:
+            self.audit.record(u["username"], "user.mfa_disable_failed", "user", u["username"])
+            raise AuthError("invalid_credentials")
+        with self.db.tx() as c:
+            c.execute("UPDATE users SET totp_enabled=0, totp_secret=NULL, totp_last_step=NULL WHERE id=?", (u["id"],))
+            self.audit.record(u["username"], "user.mfa_disable", "user", u["username"], conn=c)
+
+    def totp_reset(self, username, actor):
+        """휴대폰을 잃어버린 경우: 관리자(또는 서버 CLI)가 끔. 그 사용자의 세션도 모두 끊음."""
+        with self.db.tx() as c:
+            u = c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+            if not u:
+                raise KeyError(username)
+            c.execute("UPDATE users SET totp_enabled=0, totp_secret=NULL, totp_last_step=NULL WHERE id=?", (u["id"],))
+            c.execute("DELETE FROM tokens WHERE user_id=?", (u["id"],))
+            self.audit.record(actor, "user.mfa_reset", "user", username, conn=c)
 
     def resolve(self, token, kind="session"):
         if not token:
             return None
-        r = self.db.one("SELECT u.id, u.username, u.role, u.active, t.expires_at FROM tokens t JOIN users u ON u.id = t.user_id "
+        r = self.db.one("SELECT u.id, u.username, u.role, u.active, u.must_change_pw, u.totp_enabled, t.expires_at FROM tokens t JOIN users u ON u.id = t.user_id "
                         "WHERE t.token_hash=? AND t.kind=?", (_sha(token), kind))
         if not r or not r["active"] or r["expires_at"] < time.time():
             return None
         if kind == "stream":                                 # 1회용
             self.db.execute("DELETE FROM tokens WHERE token_hash=?", (_sha(token),))
-        return {"id": r["id"], "username": r["username"], "role": r["role"], "permissions": self.permissions(r["role"])}
+        return {"id": r["id"], "username": r["username"], "role": r["role"], "permissions": self.permissions(r["role"]),
+                "must_change": bool(r["must_change_pw"]), "mfa": bool(r["totp_enabled"])}
 
     def logout(self, token):
         self.db.execute("DELETE FROM tokens WHERE token_hash=?", (_sha(token),))
@@ -197,6 +295,17 @@ class AuthService:
         self.db.execute("INSERT INTO tokens (token_hash, user_id, kind, expires_at, created_at) VALUES (?,?,?,?,?)",
                         (_sha(t), user["id"], "stream", time.time() + self.settings.get("api.stream_ticket_ttl_sec", 60), time.time()))
         return t
+
+    def local_user(self, key, addr):
+        """root 전용 점검 키 (rkmsiem.env 의 RKMSIEM_LOCAL_TOKEN, root 0600): 이 서버 안(127.0.0.1)에서 온 요청만.
+        설치 자가 점검·smoketest 가 첫 비밀번호 변경·2단계 인증과 상관없이 돌 수 있게. 감사 로그 행위자는 root@local."""
+        want = self.settings.secret("RKMSIEM_LOCAL_TOKEN") or ""
+        if len(want) < 32 or not key or addr not in ("127.0.0.1", "::1") or not hmac.compare_digest(key.encode(), want.encode()):
+            return None
+        role = "admin" if "admin" in self.roles() else next((r for r in self.roles() if "users:write" in self.permissions(r)), None)
+        if not role:
+            return None
+        return {"id": None, "username": "root@local", "role": role, "permissions": self.permissions(role), "must_change": False, "mfa": True}
 
     def check_ingest_key(self, key):
         return bool(key) and any(hmac.compare_digest(_sha(key), k) for k in self._ingest)

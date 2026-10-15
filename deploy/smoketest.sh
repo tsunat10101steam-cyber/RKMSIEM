@@ -17,7 +17,9 @@ PASS=0; FAIL=0
 ok()  { echo "  ✔ $*"; PASS=$((PASS+1)); }
 bad() { echo "  ✘ $*"; FAIL=$((FAIL+1)); }
 j()   { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-api() { curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$@"; }
+LOCAL_TOKEN="$(envval RKMSIEM_LOCAL_TOKEN)"
+api() { if [ -n "$LOCAL_TOKEN" ]; then curl -fsS -H "X-RKMSIEM-Local: $LOCAL_TOKEN" -H 'Content-Type: application/json' "$@"
+	else curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$@"; fi; }
 
 TEST_IP="198.51.100.$((RANDOM % 200 + 20))"
 TEST_USER="rkmsmoke$((RANDOM % 9000 + 1000))"
@@ -27,8 +29,10 @@ login() {
 	RK_U="$RKMSIEM_ADMIN_USER" RK_P="$1" python3 -c 'import json,os;print(json.dumps({"username":os.environ["RK_U"],"password":os.environ["RK_P"]}))' \
 		| curl -fsS -H 'Content-Type: application/json' --data-binary @- $BASE/api/auth/login 2>/dev/null | j 'd["token"]' 2>/dev/null
 }
-TOKEN="$(login "${SMOKE_ADMIN_PASSWORD:-$RKMSIEM_ADMIN_PASSWORD}" || true)"   # SMOKE_ADMIN_PASSWORD: 설치 화면이 넘겨줌
-if [ -z "$TOKEN" ]; then                       # 설치 후 비밀번호를 바꾼 경우 → 직접 입력 (명령 기록에 남지 않음)
+TOKEN=""
+# 점검 키(root 전용)가 있으면 그것으로 — 첫 비밀번호 변경·2단계 인증을 켠 관리자 계정이어도 점검 가능
+[ -n "$LOCAL_TOKEN" ] || TOKEN="$(login "${SMOKE_ADMIN_PASSWORD:-$RKMSIEM_ADMIN_PASSWORD}" || true)"   # SMOKE_ADMIN_PASSWORD: 설치 화면이 넘겨줌
+if [ -z "$LOCAL_TOKEN" ] && [ -z "$TOKEN" ]; then                       # 설치 후 비밀번호를 바꾼 경우 → 직접 입력 (명령 기록에 남지 않음)
 	[ -t 0 ] || { echo "로그인 실패 — 관리자 비밀번호를 확인하세요"; exit 1; }
 	read -rsp "  $RKMSIEM_ADMIN_USER 비밀번호를 입력하세요 (화면에 안 보임): " PW; echo
 	TOKEN="$(login "$PW" || true)"

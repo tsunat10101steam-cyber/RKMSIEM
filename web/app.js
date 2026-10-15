@@ -30,7 +30,7 @@ async function api(path, opt = {}) {
   const r = await fetch(path, { method: opt.method || "GET", headers: h, body: opt.body ? JSON.stringify(opt.body) : undefined });
   let j = null;
   try { j = await r.json(); } catch (e) { /* 본문 없음 */ }
-  if (r.status === 401 && path !== "/api/auth/login") { setToken(null); throw new ApiErr(401, { error: "로그인이 필요합니다 — login 을 입력하세요" }); }
+  if (r.status === 401 && path !== "/api/auth/login" && path !== "/api/auth/mfa") { setToken(null); throw new ApiErr(401, { error: "로그인이 필요합니다 — login 을 입력하세요" }); }
   if (!r.ok) throw new ApiErr(r.status, j);
   return j;
 }
@@ -972,6 +972,7 @@ function helpHtml() {
     <code>search ip=… user=… outcome=… 텍스트</code><span>이벤트 검색</span>
     <code>report incident &lt;번호&gt;</code><span>사건 보고서 PDF 받기 (사건 화면에서 메일 발송)</span>
     <code>report [6h|24h|7d|30d|all]</code><span>기간 요약 보고서 PDF 받기 (생략하면 현재 range)</span>
+    <code>mfa · mfa setup · mfa off</code><span>2단계 인증(OTP 앱) 상태 / 켜기 (QR 코드) / 끄기</span>
     <code>ssh [계정@]IP</code><span>웹 터미널 — 토폴로지에서 SIEM 과 와이어로 이어진 기기에 SSH 접속 (권한 terminal:use). ssh 만 치면 접속 가능한 기기 목록</span>
     <code>rep &lt;IP&gt;</code><span>IP 평판 조회 — AbuseIPDB 점수·신고 수 + 공개 차단 목록 피드</span>
     <code>range 6h|24h|7d|30d|all|data</code><span>집계 시간 범위 (data = 최신 데이터 기준 24시간, 기본)</span>
@@ -1028,6 +1029,7 @@ async function run(raw) {
     catch (e) { out.lastElementChild.outerHTML = `<div class="msg c-high">${esc(errMsg(e))}</div>`; }
     scrollTo(0, document.body.scrollHeight); return;
   }
+  if (c === "mfa" || c === "2fa") { await mfaCommand(opt, cmd); return; }
   if (c === "ssh" || c === "터미널") {                               // 웹 터미널 (토폴로지에서 SIEM 과 와이어로 이어진 기기)
     try { out.insertAdjacentHTML("beforeend", echo(cmd) + await terminalCommand(arg)); }
     catch (e) { out.insertAdjacentHTML("beforeend", echo(cmd) + `<div class="msg c-high">${esc(errMsg(e))}</div>`); }
@@ -1102,37 +1104,125 @@ async function passwdInput(v) {
 }
 async function loginInput(v) {
   if (loginStep.passwd) return passwdInput(v);
+  if (loginStep.mfaCmd) return mfaInput(v);
   if (loginStep.step === "user") {
     if (!v) return;
     loginStep = { step: "pass", user: v };
     input.type = "password"; input.placeholder = "비밀번호"; $("#ps").innerHTML = `login:<span class="path"> password</span>`;
     return;
   }
+  if (loginStep.step === "mfa") {                                    // 2단계 인증 코드
+    const { ticket } = loginStep;
+    loginStep = null; input.type = "text"; input.removeAttribute("inputmode"); input.placeholder = "dashboard [option] 입력 · help 로 전체 명령 보기";
+    try { await loginDone(await api("/api/auth/mfa", { method: "POST", body: { ticket, code: v } })); }
+    catch (e) {
+      const again = e.body?.error === "invalid_code";
+      out.insertAdjacentHTML("beforeend", `<div class="msg c-high">${again ? "코드가 맞지 않습니다 (방금 쓴 코드는 다시 못 씀) — 앱에 새로 나온 6자리를 입력하세요" : e.status === 429 ? "시도가 너무 많습니다. 잠시 후 다시" : "인증 시간이 지났습니다 — 처음부터 다시 로그인하세요"}</div>`);
+      if (again) promptMfa(ticket); else promptLogin();
+    }
+    return;
+  }
   const user = loginStep.user;
   loginStep = null; input.type = "text"; input.placeholder = "dashboard [option] 입력 · help 로 전체 명령 보기";
   try {
     const r = await api("/api/auth/login", { method: "POST", body: { username: user, password: v } });
-    setToken(r.token); await afterLogin(true);
+    if (r.mfa_required) return promptMfa(r.mfa_ticket);
+    await loginDone(r);
   } catch (e) {
     out.insertAdjacentHTML("beforeend", `<div class="msg c-high">로그인 실패: ${esc(e.status === 429 ? "시도가 너무 많습니다. 잠시 후 다시" : "사용자 이름 또는 비밀번호가 올바르지 않습니다")}</div>`);
     $("#ps").innerHTML = `guest@rkmsiem:<span class="path">~</span>$`;
   }
 }
+function promptMfa(ticket) {
+  loginStep = { step: "mfa", ticket };
+  input.type = "text"; input.value = ""; input.setAttribute("inputmode", "numeric"); input.autocomplete = "one-time-code"; input.placeholder = "OTP 앱의 6자리 코드";
+  $("#ps").innerHTML = `login:<span class="path"> code</span>`;
+  out.insertAdjacentHTML("beforeend", `<div class="msg acc">2단계 인증 — OTP 앱(Google Authenticator 등)에 보이는 6자리 코드를 입력하세요</div>`);
+  scrollTo(0, document.body.scrollHeight); input.focus();
+}
+async function loginDone(r) {
+  setToken(r.token);
+  if (r.must_change_password) return forcePasswd();
+  await afterLogin(true);
+}
+async function forcePasswd() {                                       // 첫 로그인·임시 비밀번호: 바꾸기 전에는 다른 기능이 막힘
+  S.me = await api("/api/me");
+  $("#who").textContent = `${S.me.username} (${S.me.role})`;
+  out.insertAdjacentHTML("beforeend", `<div class="msg c-high">처음 받은(또는 관리자가 재설정한) 비밀번호입니다. 새 비밀번호를 정해야 콘솔을 쓸 수 있습니다.</div>`);
+  promptPasswd();
+}
 async function afterLogin(announce) {
   S.me = await api("/api/me");
+  if (S.me.must_change_password) return forcePasswd();
   $("#who").textContent = `${S.me.username} (${S.me.role})`;
   $("#ps").innerHTML = `${esc(S.me.username)}@rkmsiem:<span class="path">~</span>$`;
   const md = $("#mode"); md.textContent = S.me.mode.toUpperCase(); md.className = `mode ${S.me.mode === "live" ? "live" : ""}`;
   await loadOverview();
   openStream();
   if (announce) out.insertAdjacentHTML("beforeend", `<div class="msg acc">${esc(S.me.username)} 님 로그인 (${esc(S.me.role)}). <span class="dim">dashboard all 또는 아래 버튼으로 시작하세요.</span></div>`);
+  if (announce && !S.me.mfa_enabled && can("terminal:use")) out.insertAdjacentHTML("beforeend", `<div class="msg c-medium">2단계 인증이 꺼져 있습니다 — <span class="link" data-cmd="mfa setup">mfa setup</span> 으로 켜세요 (웹 터미널은 2단계 인증 계정만 사용 가능)</div>`);
   scrollTo(0, document.body.scrollHeight);
 }
 
+// ---------------------------------------------------------------- 2단계 인증 (mfa)
+let qrLib = null;
+function loadQr() {
+  return qrLib ||= new Promise((ok, bad) => { const sc = document.createElement("script"); sc.src = "/static/vendor/qrcode/qrcode.js";
+    sc.onload = ok; sc.onerror = () => { qrLib = null; bad(new Error("QR 모듈을 불러오지 못했습니다")); }; document.head.appendChild(sc); });
+}
+function mfaPrompt(step, ph, ps, pw) {
+  loginStep = { mfaCmd: true, ...step };
+  input.type = pw ? "password" : "text"; input.value = ""; input.placeholder = ph;
+  if (!pw) input.setAttribute("inputmode", "numeric"); else input.removeAttribute("inputmode");
+  $("#ps").innerHTML = `mfa:<span class="path"> ${ps}</span>`; input.focus();
+}
+function mfaEnd() { loginStep = null; input.type = "text"; input.removeAttribute("inputmode"); input.placeholder = "dashboard [option] 입력 · help 로 전체 명령 보기";
+  $("#ps").innerHTML = `${esc(S.me.username)}@rkmsiem:<span class="path">~</span>$`; }
+async function mfaCommand(opt, cmd) {
+  const msg = h => { out.insertAdjacentHTML("beforeend", h); scrollTo(0, document.body.scrollHeight); };
+  try {
+    const st = await api("/api/me/mfa");
+    if (!opt) return msg(echo(cmd) + `<div class="msg">2단계 인증: ${st.enabled ? `<b class="acc">켜짐</b>` : `<b class="c-high">꺼짐</b>`}
+      ${st.required_for_terminal ? `<span class="dim">· 웹 터미널은 2단계 인증 계정만 사용 가능</span>` : ""}<br><span class="dim">${st.enabled ? "끄기: mfa off" : "켜기: mfa setup"}</span></div>`);
+    if (opt === "setup") {
+      if (st.enabled) return msg(echo(cmd) + `<div class="msg c-high">이미 켜져 있습니다. 휴대폰을 바꿨다면 mfa off 후 다시 setup 하세요.</div>`);
+      const [r] = await Promise.all([api("/api/me/mfa/setup", { method: "POST" }), loadQr()]);
+      const qr = qrcode(0, "M"); qr.addData(r.uri); qr.make();
+      msg(echo(cmd) + `<div class="msg mfa-box"><div class="mfa-qr">${qr.createSvgTag({ cellSize: 4, margin: 16, scalable: true, title: "2단계 인증 QR 코드" })}</div>
+        <div><b>1.</b> 휴대폰 OTP 앱(Google Authenticator · Microsoft Authenticator 등)에서 <b>QR 코드 스캔</b><br>
+        <span class="dim">스캔이 안 되면 '설정 키 입력' 으로:</span> <code class="mfa-key">${esc(r.secret.match(/.{1,4}/g).join(" "))}</code><br>
+        <b>2.</b> 앱에 나온 <b>6자리 코드</b>를 아래에 입력하면 켜집니다 <span class="dim">(Esc 취소 — 코드를 넣기 전에는 켜지지 않음)</span><br>
+        <span class="faint">이 화면은 지금 한 번만 보입니다. 다른 사람이 보지 않게 하세요.</span></div></div>`);
+      return mfaPrompt({ step: "enable" }, "앱의 6자리 코드", "code");
+    }
+    if (opt === "off") {
+      if (!st.enabled) return msg(echo(cmd) + `<div class="msg">이미 꺼져 있습니다.</div>`);
+      msg(echo(cmd) + `<div class="msg acc">2단계 인증 끄기 — 비밀번호와 지금 코드를 차례로 입력 (Esc 취소)</div>`);
+      return mfaPrompt({ step: "off_pw" }, "비밀번호", "password", true);
+    }
+    msg(echo(cmd) + `<div class="msg">사용법: mfa · mfa setup · mfa off</div>`);
+  } catch (e) { msg(echo(cmd) + `<div class="msg c-high">${esc(errMsg(e))}</div>`); }
+}
+async function mfaInput(v) {
+  const msg = h => { out.insertAdjacentHTML("beforeend", h); scrollTo(0, document.body.scrollHeight); };
+  const s = loginStep;
+  if (s.step === "off_pw") return mfaPrompt({ step: "off_code", pw: v }, "앱의 6자리 코드", "code");
+  try {
+    if (s.step === "enable") { await api("/api/me/mfa/enable", { method: "POST", body: { code: v } }); S.me.mfa_enabled = true;
+      mfaEnd(); $$(".mfa-qr").forEach(q => q.closest(".mfa-box").innerHTML = `<span class="dim">(QR 코드 숨김)</span>`);
+      return msg(`<div class="msg acc">2단계 인증을 켰습니다. 다음 로그인부터 비밀번호 다음에 앱의 코드를 묻습니다.</div>`); }
+    if (s.step === "off_code") { await api("/api/me/mfa/disable", { method: "POST", body: { password: s.pw, code: v } }); S.me.mfa_enabled = false;
+      mfaEnd(); return msg(`<div class="msg acc">2단계 인증을 껐습니다.</div>`); }
+  } catch (e) {
+    if (s.step === "enable") { msg(`<div class="msg c-high">${esc(e.body?.details || errMsg(e))} — 다시 입력하세요 (Esc 취소)</div>`); return mfaPrompt({ step: "enable" }, "앱의 6자리 코드", "code"); }
+    mfaEnd(); msg(`<div class="msg c-high">${esc(e.body?.details || errMsg(e))}</div>`);
+  }
+}
+
 // ---------------------------------------------------------------- 입력창
-const COMPLETE = ["help", "clear", "login", "logout", "whoami", "passwd", "range ", "search ", "incident ", "run ", "rep ", "ssh ", "report ", "report incident ", "approve ", "reject ", "theme ", "dashboard all"].concat(ORDER.map(k => "dashboard " + PANELS[k].aliases[0]));
+const COMPLETE = ["help", "clear", "login", "logout", "whoami", "passwd", "range ", "search ", "incident ", "run ", "rep ", "ssh ", "mfa", "mfa setup", "mfa off", "report ", "report incident ", "approve ", "reject ", "theme ", "dashboard all"].concat(ORDER.map(k => "dashboard " + PANELS[k].aliases[0]));
 input.addEventListener("keydown", e => {
-  if (e.key === "Escape" && loginStep) { loginStep = null; input.type = "text"; input.value = ""; $("#ps").innerHTML = `${esc(S.me?.username || "guest")}@rkmsiem:<span class="path">~</span>$`; return; }
+  if (e.key === "Escape" && loginStep) { loginStep = null; input.type = "text"; input.value = ""; input.removeAttribute("inputmode"); $("#ps").innerHTML = `${esc(S.me?.username || "guest")}@rkmsiem:<span class="path">~</span>$`; return; }
   if (e.key === "Enter") { const v = input.value; input.value = ""; run(v); }
   else if (loginStep) return;
   else if (e.key === "ArrowUp") { if (hi > 0) input.value = hist[--hi]; e.preventDefault(); }

@@ -10,7 +10,7 @@ const tmGenPw = () => { const a = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuv
   return [...r].map(x => a[x % a.length]).join(""); };
 const tmAgo = ts => { const s = Math.max(0, Date.now() / 1000 - ts);
   return s < 60 ? "방금" : s < 3600 ? `${Math.floor(s / 60)}분 전` : s < 86400 ? `${Math.floor(s / 3600)}시간 전` : `${Math.floor(s / 86400)}일 전`; };
-const tmStaffUrl = st => st.public_url || `${location.protocol}//${location.hostname}:8090/`;
+const tmStaffUrl = st => st.public_url || `${location.protocol}//${location.hostname}:${location.protocol === "https:" ? 8444 : 8090}/`;
 
 async function renderTeam(el, live) {
   TM.el = el;
@@ -62,13 +62,14 @@ function tmAccounts(items) {
         <label class="tm-pw">임시 비밀번호<span class="st-row"><input data-n="password" type="password" placeholder="12자 이상" autocomplete="new-password"><button class="btn" data-x="gen">생성</button></span></label>
         <div class="st-row"><button class="btn primary" data-x="create">추가</button><span class="tm-msg faint"></span></div>
       </div></details>
-    <div class="tbl"><table class="tm-acct"><thead><tr><th>아이디</th><th>역할</th><th>담당자 명단</th><th>상태</th><th></th></tr></thead><tbody>
+    <div class="tbl"><table class="tm-acct"><thead><tr><th>아이디</th><th>역할</th><th>담당자 명단</th><th>2단계 인증</th><th>상태</th><th></th></tr></thead><tbody>
       ${items.map(u => `<tr data-a="${esc(u.username)}" class="${u.active ? "" : "off"}">
         <td><b>${esc(u.username)}</b>${u.username === S.me?.username ? ' <span class="acc">(나)</span>' : ""}</td>
         <td><select data-x="role" aria-label="${esc(u.username)} 역할">${roles(u.role)}</select></td>
         <td>${u.in_roster ? `<span class="acc">연결됨</span>` : `<span class="faint">없음 · 배정 불가</span>`}</td>
-        <td>${u.active ? "활성" : `<b class="c-high">비활성</b>`}</td>
-        <td class="tm-acts"><button class="btn" data-x="pw">비밀번호 재설정</button>
+        <td>${u.mfa ? `<span class="acc">켜짐</span>` : `<span class="faint">꺼짐</span>`}</td>
+        <td>${u.active ? (u.must_change ? `활성 <span class="c-medium">· 비밀번호 변경 대기</span>` : "활성") : `<b class="c-high">비활성</b>`}</td>
+        <td class="tm-acts"><button class="btn" data-x="pw">비밀번호 재설정</button>${u.mfa ? `<button class="btn" data-x="mfa">2단계 해제</button>` : ""}
           <button class="btn ${u.active ? "danger" : ""}" data-x="active">${u.active ? "비활성화" : "다시 활성화"}</button></td></tr>`).join("")}
     </tbody></table></div>`;
 }
@@ -89,7 +90,7 @@ function tmBind(el, admin, accounts) {
     const v = k => $(`[data-n="${k}"]`, add), body = { username: v("username").value.trim(), password: v("password").value, role: v("role").value };
     if (!body.username || body.password.length < 12) { shake(add, 5); $(".tm-msg", add).textContent = "아이디와 12자 이상 임시 비밀번호가 필요합니다"; return; }
     try { await api("/api/users", { method: "POST", body });
-      toast(`로그인 계정 <b>${esc(body.username)}</b> 추가 — 임시 비밀번호를 본인에게 전달하고 로그인 후 passwd 로 바꾸게 하세요`); await redo(); }
+      toast(`로그인 계정 <b>${esc(body.username)}</b> 추가 — 임시 비밀번호를 본인에게 전달하세요 (첫 로그인 때 새 비밀번호를 정하게 됩니다)`); await redo(); }
     catch (e) { err(e); }
   };
   $$("tr[data-a]", el).forEach(row => {
@@ -105,6 +106,12 @@ function tmBind(el, admin, accounts) {
       try { await api(`/api/users/${encodeURIComponent(name)}/password`, { method: "POST", body: { password: val } });
         if (!pw.trim()) prompt("생성된 임시 비밀번호 — 지금 복사해 전달하세요 (다시 볼 수 없음)", val);
         toast(`${esc(name)} 비밀번호 재설정 — 그 사람의 모든 세션이 로그아웃됨`); } catch (e) { err(e); }
+    };
+    const mfa = $('[data-x="mfa"]', row);
+    if (mfa) mfa.onclick = async () => {
+      if (!confirm(`${name} 의 2단계 인증을 해제할까요? (휴대폰 분실 등) 그 사람은 로그아웃되고, 로그인 후 mfa setup 으로 다시 등록해야 합니다.`)) return;
+      try { await api(`/api/users/${encodeURIComponent(name)}/mfa/reset`, { method: "POST" }); toast(`${esc(name)} 2단계 인증 해제`); } catch (e) { err(e); }
+      await redo();
     };
     $('[data-x="active"]', row).onclick = async () => {
       if (u.active && !confirm(`${name} 의 로그인 계정을 비활성화할까요? 즉시 로그아웃됩니다. 담당자 명단(배정)은 담당자 관리 앱에서 따로 관리합니다.`)) return;

@@ -105,9 +105,10 @@ cat <<EOF
 ==> 적용합니다. 지금 SSH 가 끊기면 정상입니다.
   1) VMware: 편집 → 가상 네트워크 편집기 → VMnet8(NAT) → 서브넷 $NET
      (DHCP 대역이 $NEWIP 와 겹치지 않게) → NAT 설정 → 게이트웨이 $GW → 포트 포워딩의 대상 IP 를 모두 $NEWIP 로
-     (예: 호스트 8088 → $NEWIP:8088, 호스트 8090 → $NEWIP:8090, 호스트 2222 → $NEWIP:22)
+     (예: 호스트 8443 → $NEWIP:8443, 호스트 8444 → $NEWIP:8444, 호스트 2222 → $NEWIP:22 — HTTPS 를 안 켰다면 8088·8090)
   2) ${ROLLBACK}초 안에 새 주소로 다시 접속 후:  sudo $0 --confirm
-  3) 콘솔 settings → 메일 → 콘솔 주소 '지금 주소', IDS 전송기는 --siem http://$NEWIP:8088 로 다시 설치
+  3) 콘솔 settings → 메일 → 콘솔 주소 '지금 주소', IDS 전송기는 --siem https://$NEWIP:8443 로 다시 설치
+     HTTPS 를 켰다면 인증서에 새 IP 를 넣기: sudo $(dirname "$0")/tls.sh --renew  (지문이 바뀌므로 IDS 전송기도 새 지문으로)
 EOF
 netplan apply
 sleep 2

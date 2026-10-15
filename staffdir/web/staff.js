@@ -55,7 +55,7 @@ async function boot() {
   if (!S.token) return show("login");
   try { S.me = await api("/api/me"); } catch { return; }
   const c = $("#console");
-  c.href = S.me.console_url || `${location.protocol}//${location.hostname}:8088/`;
+  c.href = S.me.console_url || `${location.protocol}//${location.hostname}:${location.protocol === "https:" ? 8443 : 8088}/`;
   show("main");
   await load();
 }
