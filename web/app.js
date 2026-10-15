@@ -972,6 +972,7 @@ function helpHtml() {
     <code>search ip=… user=… outcome=… 텍스트</code><span>이벤트 검색</span>
     <code>report incident &lt;번호&gt;</code><span>사건 보고서 PDF 받기 (사건 화면에서 메일 발송)</span>
     <code>report [6h|24h|7d|30d|all]</code><span>기간 요약 보고서 PDF 받기 (생략하면 현재 range)</span>
+    <code>ssh [계정@]IP</code><span>웹 터미널 — 토폴로지에서 SIEM 과 와이어로 이어진 기기에 SSH 접속 (권한 terminal:use). ssh 만 치면 접속 가능한 기기 목록</span>
     <code>rep &lt;IP&gt;</code><span>IP 평판 조회 — AbuseIPDB 점수·신고 수 + 공개 차단 목록 피드</span>
     <code>range 6h|24h|7d|30d|all|data</code><span>집계 시간 범위 (data = 최신 데이터 기준 24시간, 기본)</span>
     <div class="h">계정 · 기타</div>
@@ -1027,6 +1028,11 @@ async function run(raw) {
     catch (e) { out.lastElementChild.outerHTML = `<div class="msg c-high">${esc(errMsg(e))}</div>`; }
     scrollTo(0, document.body.scrollHeight); return;
   }
+  if (c === "ssh" || c === "터미널") {                               // 웹 터미널 (토폴로지에서 SIEM 과 와이어로 이어진 기기)
+    try { out.insertAdjacentHTML("beforeend", echo(cmd) + await terminalCommand(arg)); }
+    catch (e) { out.insertAdjacentHTML("beforeend", echo(cmd) + `<div class="msg c-high">${esc(errMsg(e))}</div>`); }
+    scrollTo(0, document.body.scrollHeight); return;
+  }
   if (c === "rep" || c === "평판") {                                 // IP 평판 직접 조회 (AbuseIPDB + 피드)
     try { out.insertAdjacentHTML("beforeend", echo(cmd) + repHtml(await api(`/api/intel/lookup?ip=${encodeURIComponent(rest[0] || "")}`))); }
     catch (e) { out.insertAdjacentHTML("beforeend", echo(cmd) + `<div class="msg c-high">${esc(errMsg(e))}</div>`); }
@@ -1053,7 +1059,7 @@ async function run(raw) {
 }
 addEventListener("keydown", e => {
   const m = { F1: "all", F2: "critical", F3: "high", F4: "medium", F5: "low" }[e.key];
-  if (m && fkeyHandler) { e.preventDefault(); fkeyHandler(m); }
+  if (m && fkeyHandler && !e.target.closest?.(".tw")) { e.preventDefault(); fkeyHandler(m); }
 });
 
 const VERDICT_KO = { malicious: ["c-critical", "악성"], suspicious: ["c-high", "의심"], clean: ["acc", "정상(허용 목록)"], unknown: ["dim", "정보 없음"], internal: ["dim", "내부/예약 대역"] };
@@ -1124,7 +1130,7 @@ async function afterLogin(announce) {
 }
 
 // ---------------------------------------------------------------- 입력창
-const COMPLETE = ["help", "clear", "login", "logout", "whoami", "passwd", "range ", "search ", "incident ", "run ", "rep ", "report ", "report incident ", "approve ", "reject ", "theme ", "dashboard all"].concat(ORDER.map(k => "dashboard " + PANELS[k].aliases[0]));
+const COMPLETE = ["help", "clear", "login", "logout", "whoami", "passwd", "range ", "search ", "incident ", "run ", "rep ", "ssh ", "report ", "report incident ", "approve ", "reject ", "theme ", "dashboard all"].concat(ORDER.map(k => "dashboard " + PANELS[k].aliases[0]));
 input.addEventListener("keydown", e => {
   if (e.key === "Escape" && loginStep) { loginStep = null; input.type = "text"; input.value = ""; $("#ps").innerHTML = `${esc(S.me?.username || "guest")}@rkmsiem:<span class="path">~</span>$`; return; }
   if (e.key === "Enter") { const v = input.value; input.value = ""; run(v); }

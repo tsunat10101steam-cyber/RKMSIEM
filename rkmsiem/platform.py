@@ -39,6 +39,7 @@ class Platform:
         self._seed_web_settings()
         self._ensure_builtin_sources()
         self._retire_renamed_rules()
+        self._ensure_terminal_permission()
         from .vault import Vault
         self.vault = Vault(self.db, self.audit)
         self.alerts = AlertStore(self.db, self.metrics)
@@ -66,6 +67,8 @@ class Platform:
         self.engine = None
         self.rebuild_engine()
         self.collectors = {}
+        from .terminal import TerminalManager
+        self.terminal = TerminalManager(self)          # 웹 터미널 (토폴로지에서 SIEM 과 와이어로 이어진 기기에 SSH)
         self.config.on_change(self._on_config_change)
         self._stop = threading.Event()
         self._threads = []
@@ -143,6 +146,26 @@ class Platform:
             self.config.put("sources", "default", new, "system", f"{marker} (IDS 연동, 수동형 HTTP — 보내는 쪽이 없으면 아무 일도 안 함)")
         except Exception:     # noqa: BLE001
             log.exception("suricata source add failed")
+
+    NEW_PERMISSIONS = {"terminal:use": ["admin"]}                   # 업데이트로 생긴 권한 → 기본으로 받을 역할
+
+    def _ensure_terminal_permission(self):
+        """기존 설치(권한 표가 DB 에 있음)에도 새 권한을 한 번만 추가. 관리자가 뺀 뒤에는 다시 넣지 않음."""
+        cur = self.config.get("rbac")
+        if not cur:
+            return
+        for perm, roles in self.NEW_PERMISSIONS.items():
+            if any(perm in (r.get("permissions") or []) for r in cur.get("roles", {}).values()):
+                continue
+            if any(perm in str(self.config.content_at("rbac", "default", v["version"]) or {}) for v in self.config.versions("rbac", "default")):
+                continue
+            new = {"roles": {k: dict(v, permissions=list(v.get("permissions", [])) + ([perm] if k in roles else [])) for k, v in cur["roles"].items()}}
+            new = dict(cur, **new)
+            try:
+                self.config.put("rbac", "default", new, "system", f"새 권한 {perm} 추가 ({', '.join(roles)})")
+                cur = new
+            except Exception:     # noqa: BLE001
+                log.exception("rbac permission add failed")
 
     RETIRED_RULES = {"ids_suricata_alert": "ids_alert"}             # 예전 id → 새 id (이름 정리로 바뀐 규칙)
 
@@ -233,6 +256,7 @@ class Platform:
 
     def stop(self):
         self._stop.set()
+        self.terminal.stop()
         self.feeds.stop()
         self.staff.stop()
         self.notifier.stop()

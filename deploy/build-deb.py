@@ -24,7 +24,7 @@ SKIP_DIRS = {"__pycache__", ".pytest_cache", "dist"}
 SKIP_EXT = (".pyc", ".db", ".db-wal", ".db-shm", ".key", ".mmdb")
 EXEC_EXT = (".sh",)
 EXEC_NAMES = {"rkmsiem-account", "rkmsiem-ship-eve.py", "build-deb.py"}
-DEPENDS = "python3 (>= 3.10), python3-venv, python3-pip, nftables, sudo | sudo-rs, curl, rsyslog, fonts-nanum, whiptail"
+DEPENDS = "python3 (>= 3.10), python3-venv, python3-pip, nftables, sudo | sudo-rs, curl, rsyslog, fonts-nanum, openssh-client, whiptail"
 
 
 def files():

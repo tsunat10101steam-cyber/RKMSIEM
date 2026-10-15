@@ -5,7 +5,7 @@ roles:
     permissions: [events:read, alerts:read, alerts:write, incidents:read, incidents:write, incidents:assign,
                   rules:read, rules:write, rules:simulate, playbooks:read, playbooks:write, playbooks:run,
                   runs:read, runs:approve, runs:cancel, audit:read, config:read, config:write,
-                  users:write, metrics:read, collectors:read, dlq:read, dlq:replay]
+                  users:write, metrics:read, collectors:read, dlq:read, dlq:replay, terminal:use]
   analyst:
     label: 분석가
     permissions: [events:read, alerts:read, alerts:write, incidents:read, incidents:write, incidents:assign,

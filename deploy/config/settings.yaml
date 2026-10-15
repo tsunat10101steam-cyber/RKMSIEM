@@ -40,6 +40,13 @@ api:
   server: waitress            # waitress(운영) | flask(개발)
   threads: 32
 
+terminal:                       # 웹 터미널 — 토폴로지에서 SIEM 과 와이어로 이어진 기기에만 SSH (권한 terminal:use)
+  enabled: true
+  allowed_ports: [22, 2222]
+  max_sessions_per_user: 3
+  idle_timeout_sec: 900         # 입력이 없으면 종료
+  max_duration_sec: 14400       # 한 세션 최대 4시간
+  # dir: data/terminal          # known_hosts · 세션 출력 기록 (기본: DB 옆 terminal/)
 geo:
   server_name: 관제 서버
   server_lat: 37.57           # 이 서버 위치(지도 표시용)

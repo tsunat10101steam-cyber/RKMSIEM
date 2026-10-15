@@ -129,7 +129,7 @@ function tpAuto() {
 async function tpSave() {
   const btn = $('[data-t="save"]', TP.el); btn.disabled = true;
   try { const r = await api("/api/config/topology?comment=" + encodeURIComponent("토폴로지 화면에서 저장"), { method: "PUT", body: TP.layout });
-    TP.saved = JSON.stringify(TP.layout); toast(`토폴로지 저장 → v${r.version}`); tpDraw(); }
+    TP.saved = JSON.stringify(TP.layout); toast(`토폴로지 저장 → v${r.version}`); tpDraw(); tpInsp(); }
   catch (e) { toast(`<span class="err">저장 실패 — ${esc(errMsg(e))}</span>`, "critical"); }
   finally { btn.disabled = false; }
 }
@@ -181,9 +181,11 @@ function tpInsp() {
       <label>메모<input data-f="note" value="${esc(n.note || "")}" ${dis}></label>
       <div class="tp-st">${n.ip ? `${st.severity ? `열린 경보 <b>${st.open_alerts}</b>건 · 최고 ${sev(st.severity)}<br><span class="dim">${(st.titles || []).map(esc).join(" · ")}</span>` : `<span class="acc">열린 경보 없음</span>`}
         ${st.blocked ? `<br><b class="c-critical">⊘ 방화벽에서 차단됨</b>` : ""}${st.events_24h ? `<br><span class="dim">최근 24시간 이벤트 ${fmt(st.events_24h)}건 · 마지막 ${fmtT(st.last_seen)}</span>` : ""}` : `<span class="faint">IP 를 넣으면 경보·차단 상태가 표시됩니다</span>`}</div>
+      ${tpTermBtn(n)}
       <div class="st-row" style="flex-wrap:wrap">${n.ip ? `<button class="btn" data-cmd="search ip=${esc(n.ip)}">이벤트 검색</button>` : ""}${st.incident_id ? `<button class="btn" data-cmd="incident ${st.incident_id}">사건 #${st.incident_id}</button>` : ""}
         ${TP.editable ? `<button class="btn danger" data-t="del">기기 삭제${links ? ` (와이어 ${links}개 포함)` : ""}</button>` : ""}</div>`;
   }
+  const tb = $('[data-t="term"]', box); if (tb) tb.onclick = () => openTerminal({ ip: tb.dataset.ip, label: tb.dataset.label });
   if (!TP.editable) return;
   $$("[data-f], [data-l]", box).forEach(i => i.addEventListener(i.tagName === "SELECT" ? "change" : "input", () => {
     if (i.dataset.l) { const l = TP.layout.links.find(x => x.id === TP.sel.link); i.value ? l.label = i.value : delete l.label; }
@@ -191,6 +193,14 @@ function tpInsp() {
     tpDraw();
   }));
   const del = $('[data-t="del"]', box); if (del) del.onclick = tpDelete;
+}
+
+// 웹 터미널 버튼: 저장된 배치에서 SIEM 과 와이어로 이어진 기기만 (최종 판단은 백엔드)
+function tpTermBtn(n) {
+  if (!n.ip || n.type === "siem" || !can("terminal:use")) return "";
+  const ok = twWired(JSON.parse(TP.saved), n.ip), unsaved = !ok && twWired(TP.layout, n.ip);
+  return `<div class="tp-term"><button class="btn ${ok ? "primary" : ""}" data-t="term" data-ip="${esc(n.ip)}" data-label="${esc(n.label || "")}" ${ok ? "" : "disabled"}>▸_ 터미널 (SSH)</button>
+    <span class="faint">${ok ? "SIEM 과 와이어로 연결됨" : unsaved ? "와이어 연결을 저장해야 접속할 수 있습니다" : "SIEM 과 와이어로 연결해야 접속할 수 있습니다"}</span></div>`;
 }
 
 // ---------------------------------------------------------------- 마우스·키보드

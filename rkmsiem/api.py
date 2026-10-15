@@ -991,6 +991,60 @@ def create_app(platform):
         from . import topology as topo
         return jsonify({"items": topo.discover(p, _int("days", 7, 1, 90))})
 
+    # ------------------------------------------------------------ 웹 터미널 (SIEM 과 와이어로 이어진 기기에 SSH)
+    from .terminal import TerminalError, targets as term_targets
+
+    @app.errorhandler(TerminalError)
+    def _term_err(e):
+        return jsonify({"error": "terminal", "details": str(e)}), e.status
+
+    @app.get("/api/terminal")
+    @require("terminal:use")
+    def terminal_list():
+        return jsonify({"enabled": p.terminal.enabled, "targets": term_targets(p.terminal.layout()),
+                        "ports": sorted(p.terminal.ports), "sessions": p.terminal.list(actor())})
+
+    @app.post("/api/terminal")
+    @require("terminal:use")
+    def terminal_open():
+        b = body({"type": "object", "required": ["ip", "login"], "additionalProperties": False,
+                  "properties": {"ip": {"type": "string", "maxLength": 64}, "login": {"type": "string", "maxLength": 32},
+                                 "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                                 "cols": {"type": "integer", "minimum": 20, "maximum": 500}, "rows": {"type": "integer", "minimum": 5, "maximum": 300}}})
+        sess = p.terminal.open(actor(), b["ip"], b["login"], b.get("port", 22), b.get("cols", 100), b.get("rows", 30))
+        return jsonify(sess.info()), 201
+
+    @app.get("/api/terminal/<sid>")
+    @require("terminal:use")
+    def terminal_read(sid):
+        import base64
+        sess = p.terminal.get(sid, actor())
+        data, end, closed, lost = p.terminal.read(sess, _int("since", 0, 0, 1 << 62), _int("wait", 20, 0, 25))
+        return jsonify({"data": base64.b64encode(data).decode(), "next": end, "closed": closed, "truncated": lost,
+                        "reason": sess.reason, "exit_code": sess.exit_code})
+
+    @app.post("/api/terminal/<sid>/input")
+    @require("terminal:use")
+    def terminal_input(sid):
+        b = body({"type": "object", "required": ["data"], "additionalProperties": False,
+                  "properties": {"data": {"type": "string", "maxLength": 65536}}})
+        p.terminal.write(p.terminal.get(sid, actor()), b["data"].encode("utf-8", "replace"))
+        return jsonify({"ok": True})
+
+    @app.post("/api/terminal/<sid>/resize")
+    @require("terminal:use")
+    def terminal_resize(sid):
+        b = body({"type": "object", "required": ["cols", "rows"], "additionalProperties": False,
+                  "properties": {"cols": {"type": "integer", "minimum": 20, "maximum": 500}, "rows": {"type": "integer", "minimum": 5, "maximum": 300}}})
+        p.terminal.resize(p.terminal.get(sid, actor()), b["rows"], b["cols"])
+        return jsonify({"ok": True})
+
+    @app.delete("/api/terminal/<sid>")
+    @require("terminal:use")
+    def terminal_close(sid):
+        p.terminal.close(p.terminal.get(sid, actor()))
+        return jsonify({"ok": True})
+
     @app.get("/api/intel/lookup")
     @require("alerts:read")
     def intel_lookup():

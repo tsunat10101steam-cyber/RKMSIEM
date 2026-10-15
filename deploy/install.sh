@@ -75,7 +75,7 @@ if pgrep -f 'unattended-upgr|apt.systemd.daily|apt-get|dpkg' >/dev/null 2>&1; th
 fi
 APT_OPTS=(-o DPkg::Lock::Timeout=900 -o Acquire::Retries=3)
 apt-get "${APT_OPTS[@]}" update
-apt-get "${APT_OPTS[@]}" install -y python3 python3-venv python3-pip nftables sudo curl rsyslog fonts-nanum
+apt-get "${APT_OPTS[@]}" install -y python3 python3-venv python3-pip nftables sudo curl rsyslog fonts-nanum openssh-client
 systemctl enable --now rsyslog >/dev/null 2>&1 || true
 PYV="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' || { echo "Python 3.10 이상 필요 (현재 $PYV)" >&2; exit 1; }
