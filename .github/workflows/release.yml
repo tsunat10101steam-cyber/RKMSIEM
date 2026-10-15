@@ -1,9 +1,14 @@
-# 버전 태그(v31 …)를 올리면: 테스트 → 배포 묶음(.deb · .tgz) 만들기 → GitHub 릴리스 생성
+# 버전 태그(v31 …)를 올리거나 Actions 화면에서 버전을 넣고 실행하면: 테스트 → 배포 묶음(.deb · .tgz) → GitHub 릴리스(태그 생성 포함)
 # 설치된 서버의 업데이트 화면(rkmsiem-setup → 업데이트)은 releases/latest 의 rkmsiem_all.deb 를 받는다.
 name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "버전 번호 (예: 31 → 태그 v31)"
+        required: true
 permissions:
   contents: write
 jobs:
@@ -11,6 +16,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0                # 릴리스 노트: 이전 태그 이후 커밋 목록
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -19,12 +26,20 @@ jobs:
           sudo apt-get install -y -q openssh-client
           pip install -q -r requirements.txt
           python -m pytest -q
+      - name: 버전
+        env:
+          IN: ${{ inputs.version }}
+        run: |
+          V="${IN:-${GITHUB_REF_NAME#v}}"; V="${V#v}"
+          [[ "$V" =~ ^[0-9]+(\.[0-9]+)*$ ]] || { echo "버전 형식 오류: $V"; exit 1; }
+          echo "V=$V" >> "$GITHUB_ENV"
       - name: 배포 묶음 만들기
-        run: python deploy/build-deb.py "${GITHUB_REF_NAME#v}"
+        run: python deploy/build-deb.py "$V"
       - name: 릴리스
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          V="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" --title "RKMSIEM $GITHUB_REF_NAME" --notes-file <(git log -1 --format=%B "$GITHUB_REF_NAME") \
+          PREV="$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)"
+          git log --no-merges --format='- %s' ${PREV:+$PREV..}HEAD > notes.txt
+          gh release create "v$V" --target "$GITHUB_SHA" --title "RKMSIEM v$V" --notes-file notes.txt \
             dist/rkmsiem_all.deb "dist/rkmsiem_${V}_all.deb" "dist/rkmsiem-v${V}.tgz"
