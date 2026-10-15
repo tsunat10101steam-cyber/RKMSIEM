@@ -1,10 +1,10 @@
 #!/bin/bash
 # Suricata IDS 서버에서 실행: RKMSIEM 으로 IDS 경보를 보내는 전송기 설치
-#   sudo ./install-ship.sh --siem http://1.1.12.135:8088
+#   sudo ./install-ship.sh --siem http://10.0.0.53:8088
 # 수집 키는 실행 중에 물어봄 (화면·명령 기록에 남지 않음). SIEM 서버에서: sudo grep INGEST_KEYS /etc/rkmsiem/rkmsiem.env
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "sudo 로 실행하세요" >&2; exit 1; }
-SIEM="http://1.1.12.135:8088"
+SIEM="http://10.0.0.53:8088"
 while [ $# -gt 0 ]; do case "$1" in --siem) SIEM="$2"; shift 2;; *) echo "알 수 없는 옵션 $1" >&2; exit 1;; esac; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -40,4 +40,4 @@ sleep 2
 systemctl --no-pager --lines=5 status rkmsiem-ship-eve || true
 echo
 echo "완료. 로그: journalctl -u rkmsiem-ship-eve -f"
-echo "시험: Kali 등에서 nmap -sS 1.1.12.135 처럼 IDS 가 보는 망(HOME_NET) 안의 주소로 스캔 → RKMSIEM 콘솔의 경보에 'IDS 탐지' 가 뜨는지 확인"
+echo "시험: Kali 등에서 nmap -sS 10.0.0.53 처럼 IDS 가 보는 망(HOME_NET) 안의 주소로 스캔 → RKMSIEM 콘솔의 경보에 'IDS 탐지' 가 뜨는지 확인"

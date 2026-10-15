@@ -105,6 +105,7 @@ sudo ./deploy/smoketest.sh          # live 에서 nft 차단·해제까지 검�
 | 계정 정보 | `/etc/passwd`·`/etc/group` 에서 계정 존재·sudo/adm 그룹(권한 계정) 조회 |
 | 웹 | waitress (127.0.0.1:8088) — 외부 공개는 `/etc/rkmsiem/nginx-rkmsiem.conf`(TLS) 로만 |
 | 안전장치 | 설치 시 현재 SSH 접속 IP → `never_block`, 설치한 관리자 계정 → `protected_accounts`, sudo 그룹 → `privileged_users`. 차단·잠금은 live 에서도 **항상 사람 승인** 후 실행 |
+| 서버 IP 변경 | `sudo ./deploy/set-ip.sh 10.0.0.53/24 [--gw 10.0.0.2] [--dns 8.8.8.8,1.1.1.1] [--iface ens33]` → netplan 백업 후 고정 IP 적용 · 5분 롤백 타이머 → 새 주소로 다시 접속해 `sudo ./deploy/set-ip.sh --confirm`. VMware NAT 포트 포워딩 대상도 새 IP 로 바꿀 것 |
 
 - 설치 위치: 코드 `/opt/rkmsiem` · 설정 `/etc/rkmsiem/config` · 비밀 `/etc/rkmsiem/rkmsiem.env`(0600) · 데이터 `/var/lib/rkmsiem`
 - 운영 점검: 웹 콘솔 `dashboard doctor` (서비스 권한으로 nft·헬퍼·수집 권한 점검) · `journalctl -u rkmsiem -f`

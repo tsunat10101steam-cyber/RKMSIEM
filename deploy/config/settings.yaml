@@ -80,7 +80,7 @@ mail:
   username: ""                      # 비우면 로그인 없이 보냄 (사내 릴레이)
   from: ""                          # 예: "RKMSIEM <soc@example.com>" (Gmail·Naver 는 로그인 계정 주소와 같아야 함)
   subject_prefix: "[RKMSIEM]"
-  console_url: ""                   # 메일 본문에 넣을 콘솔 주소 (예: http://1.1.12.135:8088)
+  console_url: ""                   # 메일 본문에 넣을 콘솔 주소 (예: http://10.0.0.53:8088)
   timeout_sec: 15
   retries: 3
   max_per_hour: 60                  # 시간당 발송 상한 (폭주 방지)

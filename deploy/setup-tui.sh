@@ -133,7 +133,7 @@ do_install() {
 	local me nets=""; me="$(who -m 2>/dev/null | sed -n 's/.*(\([0-9.]*\)).*/\1/p')"
 	if ask "설치 ③ 접속" "다른 PC(노트북·윈도우 등)의 브라우저에서 웹 콘솔에 접속할까요?\n\n아니오: 이 서버 안에서만 (http://127.0.0.1:8088)" "접속 허용" "이 서버만"; then
 		while :; do
-			nets="$(input "설치 ③ 접속 허용" "접속할 PC 의 IP 또는 대역 (쉼표로 여러 개)\n예) 1.1.12.1, 192.168.41.0/24" "${me}")" || { nets=""; break; }
+			nets="$(input "설치 ③ 접속 허용" "접속할 PC 의 IP 또는 대역 (쉼표로 여러 개)\n예) 10.0.0.1, 192.168.41.0/24" "${me}")" || { nets=""; break; }
 			nets="$(valid_nets "$nets" 2>/tmp/rk.err)" && [ -n "$nets" ] && break
 			msg "입력 확인" "IP/대역 형식이 아닙니다: $(cat /tmp/rk.err)"
 		done

@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-URL = os.environ.get("RKMSIEM_URL", "http://1.1.12.135:8088").rstrip("/") + "/api/ingest/" + os.environ.get("RKMSIEM_SOURCE", "suricata-eve")
+URL = os.environ.get("RKMSIEM_URL", "http://10.0.0.53:8088").rstrip("/") + "/api/ingest/" + os.environ.get("RKMSIEM_SOURCE", "suricata-eve")
 KEY = "".join(os.environ.get("RKMSIEM_INGEST_KEY", "").split()).split(",")[0]    # 줄바꿈·공백이 섞여도 안전하게
 EVE = os.environ.get("EVE_PATH", "/var/log/suricata/eve.json")
 TYPES = {t.strip() for t in os.environ.get("EVENT_TYPES", "alert,anomaly").split(",") if t.strip()}

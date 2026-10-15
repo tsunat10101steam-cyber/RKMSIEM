@@ -1,10 +1,10 @@
 #!/bin/bash
 # IDS 서버(Ubuntu)에 Suricata 설치·설정 — VMware NAT 망(VMnet8)을 무차별 모드로 감시
-#   sudo ./install-suricata.sh --iface ens33 --home-net 1.1.12.0/24
+#   sudo ./install-suricata.sh --iface ens33 --home-net 10.0.0.0/24
 # 하는 일: Suricata(OISF 공식 PPA) 설치 · HOME_NET/감시 NIC 지정 · ET Open 규칙 + 실습용 규칙 · 무차별 모드 유지 · 설정 검사 · 실행
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "sudo 로 실행하세요" >&2; exit 1; }
-IFACE=""; HOME_NET="1.1.12.0/24"
+IFACE=""; HOME_NET="10.0.0.0/24"
 while [ $# -gt 0 ]; do case "$1" in
 	--iface) IFACE="$2"; shift 2;; --home-net) HOME_NET="$2"; shift 2;;
 	*) echo "알 수 없는 옵션 $1" >&2; exit 1;; esac; done
@@ -83,5 +83,5 @@ cat <<EOF
 
 완료.
   경보 보기:  sudo tail -f /var/log/suricata/eve.json | jq -c 'select(.event_type=="alert") | {src: .src_ip, sig: .alert.signature}'
-  다음 단계:  sudo ./install-ship.sh --siem http://1.1.12.135:8088   (RKMSIEM 으로 보내기)
+  다음 단계:  sudo ./install-ship.sh --siem http://10.0.0.53:8088   (RKMSIEM 으로 보내기)
 EOF

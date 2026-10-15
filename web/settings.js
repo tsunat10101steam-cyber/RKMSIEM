@@ -120,7 +120,7 @@ function stMail(box) {
     </div><div>
       <div class="st-h">메일 내용</div>
       <div class="st-f2"><label>제목 머리말<input data-p="mail.subject_prefix"></label>
-        <label>콘솔 주소 <span class="faint">(본문 링크)</span><div class="st-row"><input data-p="mail.console_url" placeholder="http://1.1.12.135:8088"><button class="btn" data-x="origin">지금 주소</button></div></label></div>
+        <label>콘솔 주소 <span class="faint">(본문 링크)</span><div class="st-row"><input data-p="mail.console_url" placeholder="http://10.0.0.53:8088"><button class="btn" data-x="origin">지금 주소</button></div></label></div>
       <div class="st-h">안전장치</div>
       <div class="st-f3"><label>시간당 최대<input data-p="mail.max_per_hour" data-num="1" inputmode="numeric"></label>
         <label>재시도<input data-p="mail.retries" data-num="1" inputmode="numeric"></label>
