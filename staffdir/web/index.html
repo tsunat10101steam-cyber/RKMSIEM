@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RKMSIEM 담당자 관리</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Nanum+Gothic+Coding:wght@400;700&display=swap">
+<link rel="stylesheet" href="/static/staff.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="bar">
+    <span class="logo">RKMSIEM</span><span class="sep">│</span><span>담당자 관리</span>
+    <span class="grow"></span>
+    <span id="who" class="dim"></span>
+    <a id="console" class="link hidden" target="_blank" rel="noopener">RKMSIEM 콘솔 ↗</a>
+    <button id="logout" class="btn hidden">로그아웃</button>
+  </header>
+
+  <section id="login" class="login hidden">
+    <h1>담당자 관리</h1>
+    <p class="dim">사건을 배정받을 담당자의 이름·팀·연락처를 관리합니다. RKMSIEM 은 이 명단을 가져가 사건 배정과 배정 메일에 씁니다.</p>
+    <form id="loginForm" autocomplete="on">
+      <label>관리자 아이디<input name="username" autocomplete="username" required></label>
+      <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary" type="submit">로그인</button>
+      <span class="msg err" id="loginMsg"></span>
+    </form>
+  </section>
+
+  <main id="main" class="hidden">
+    <div class="meta" id="meta"></div>
+    <details class="add" id="add">
+      <summary><b>＋ 담당자 추가</b> <span class="faint">· 아이디가 RKMSIEM 로그인 아이디와 같으면 자동으로 연결됩니다</span></summary>
+      <div class="form">
+        <label>아이디<input data-n="username" placeholder="영문·숫자·._-" autocomplete="off"></label>
+        <label>이름<input data-n="display_name" placeholder="홍길동"></label>
+        <label>팀<input data-n="team" placeholder="관제 1팀" list="teams"></label>
+        <label>메일<input data-n="email" placeholder="배정 알림을 받을 주소"></label>
+        <label>연락처<input data-n="phone" placeholder="010-0000-0000"></label>
+        <label class="chk"><input type="checkbox" data-n="notify_assign" checked> 사건을 배정받으면 메일 알림</label>
+        <div class="row"><button class="btn primary" id="create">추가</button><span class="msg" id="addMsg"></span></div>
+      </div>
+    </details>
+    <datalist id="teams"></datalist>
+    <div class="tools">
+      <input id="q" placeholder="이름·아이디·팀 검색" aria-label="검색">
+      <select id="teamFilter" aria-label="팀"></select>
+      <label class="chk"><input type="checkbox" id="showOff"> 비활성 포함</label>
+    </div>
+    <div class="grid" id="grid"></div>
+    <h2>최근 변경</h2>
+    <div class="changes" id="changes"></div>
+  </main>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="/static/staff.js"></script>
+</body>
+</html>

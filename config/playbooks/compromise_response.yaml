@@ -1,0 +1,55 @@
+id: compromise_response
+name: 계정 침해 대응
+description: 반복 실패 뒤 로그인 성공(침해 의심) 시 평판 조회 → 자산 확인 → 심각도 조정 → 알림 → 차단/비활성화(승인 필요) → 결과 기록
+enabled: true
+trigger:
+  on: alert
+  once_per: incident              # 같은 사건에 침해 경보가 여러 개여도 대응은 한 번
+  where:
+    - {field: alert.level_id, op: in, value: [COMPROMISE, NO_LOCKOUT]}
+steps:
+  - id: reputation
+    action: ip_reputation
+    input: {ip: "{{alert.group.source.ip}}"}
+    timeout_sec: 5
+    retries: 2
+    on_failure: continue
+
+  - id: asset
+    action: asset_lookup
+    input: {account: "{{alert.group.user.name}}"}
+    when: [{field: alert.group.user.name, op: exists}]
+    on_failure: continue
+
+  - id: escalate
+    action: set_incident_severity
+    when: [{field: steps.reputation.output.verdict, op: eq, value: malicious}]
+    input: {severity: critical, reason: "위협 인텔에서 악성으로 확인된 IP"}
+
+  - id: notify_soc
+    action: notify
+    input:
+      channel: soc
+      message: "[침해 의심] {{alert.group.source.ip}} → {{alert.group.user.name}} 로그인 성공 (사건 #{{incident.id}})"
+
+  - id: block_ip
+    action: block_ip
+    approval: policy                # 파괴적 조치 → 승인 정책 적용
+    input: {ip: "{{alert.group.source.ip}}", duration_sec: 86400, reason: "침해 의심 사건 #{{incident.id}}"}
+    timeout_sec: 10
+    on_failure: continue
+    compensate: {action: unblock_ip, input: {ip: "{{alert.group.source.ip}}"}}
+
+  - id: disable_account
+    action: disable_account
+    approval: policy
+    when:
+      - {field: alert.group.user.name, op: exists}
+      - {field: alert.group.user.name, op: not_in_list, value: protected_accounts}
+    input: {account: "{{alert.group.user.name}}", reason: "침해 의심 사건 #{{incident.id}}"}
+    on_failure: continue
+    compensate: {action: enable_account, input: {account: "{{alert.group.user.name}}"}}
+
+  - id: record
+    action: record_result
+    input: {summary: "침해 대응 플레이북 완료 — 평판: {{steps.reputation.output.verdict}}"}

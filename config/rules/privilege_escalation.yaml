@@ -1,0 +1,15 @@
+id: privilege_escalation
+name: 권한 상승
+enabled: true
+type: match
+where:
+  - {field: event.category, op: contains, value: iam}
+  - {field: event.action, op: eq, value: privilege_use}
+  - {field: user.name, op: not_in_list, value: privileged_users}
+group_by: [user.name]
+levels:
+  - id: PRIV_ESC
+    min: 1
+    severity: high
+    title: 권한 상승
+incident_key: [user.name]

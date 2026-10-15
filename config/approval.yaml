@@ -1,0 +1,6 @@
+# 플레이북 승인 정책
+require_approval_for: destructive   # destructive(차단·비활성화 등) | all | none
+approver_roles: [responder, admin]
+forbid_self_approval: true          # 실행을 요청한 사람은 같은 실행을 승인할 수 없음
+timeout_sec: 3600                   # 시간 안에 결정이 없으면 만료 → 해당 단계 실패 처리
+webhook_allowlist: []               # notify 웹훅 허용 호스트 (https 만). 비어 있으면 외부 전송 안 함

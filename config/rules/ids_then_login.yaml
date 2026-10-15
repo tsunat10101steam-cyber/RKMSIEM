@@ -1,0 +1,26 @@
+id: ids_then_login
+name: IDS 탐지 후 로그인 성공
+description: >
+  네트워크(IDS)와 서버 로그(auth.log)를 잇는 상관 규칙. IDS 경보가 난 출발 IP 에서
+  1시간 안에 로그인에 성공하면, 공격이 실제 접근으로 이어졌을 가능성이 높다.
+enabled: true
+type: sequence
+where: []
+group_by: [source.ip]
+first:
+  where:
+    - {field: event.module, op: eq, value: suricata}
+    - {field: event.action, op: eq, value: ids_alert}
+  window_sec: 3600
+then:
+  where:
+    - {field: event.category, op: contains, value: authentication}
+    - {field: event.outcome, op: eq, value: success}
+  within_sec: 3600
+levels:
+  - id: IDS_COMPROMISE
+    min: 1
+    severity: critical
+    title: IDS 탐지 후 로그인 성공
+incident_key: [source.ip]
+tags: [ids]

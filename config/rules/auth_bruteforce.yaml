@@ -1,0 +1,22 @@
+id: auth_bruteforce
+name: 무차별 대입
+description: >
+  같은 출발 IP가 같은 계정에 window_sec 안에 실패한 횟수로 판단.
+  단계가 오르면 기존 경보가 상향(escalate)된다.
+enabled: true
+type: threshold
+where:
+  - {field: event.category, op: contains, value: authentication}
+  - {field: event.outcome, op: eq, value: failure}
+group_by: [source.ip, user.name]
+window_sec: 900                     # 15분
+levels:
+  - id: BRUTEFORCE
+    min: 5
+    severity: high
+    title: 무차별 대입
+  - id: BRUTEFORCE_HIGH
+    min: 10
+    severity: critical
+    title: 무차별 대입 (심각)
+incident_key: [source.ip]

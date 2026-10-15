@@ -1,0 +1,30 @@
+id: ids_alert
+name: IDS 탐지
+description: >
+  IDS 경보를 출발 IP·시그니처별로 묶는다. 10분 안에 20번 이상이면 '반복'으로 상향.
+  IDS 심각도 1(높음)은 한 단계 올리고, 3 이상(낮음)은 한 단계 내린다.
+enabled: true
+type: threshold
+where:
+  - {field: event.module, op: eq, value: suricata}
+  - {field: event.action, op: eq, value: ids_alert}
+group_by: [source.ip, rule.name]
+window_sec: 600
+levels:
+  - id: IDS_ALERT
+    min: 1
+    severity: medium
+    title: IDS 탐지
+  - id: IDS_REPEAT
+    min: 20
+    severity: high
+    title: IDS 탐지 (반복)
+modifiers:
+  - when: [{field: event.severity, op: eq, value: 1}]
+    severity_delta: 1
+    note: "IDS 심각도 높음"
+  - when: [{field: event.severity, op: gte, value: 3}]
+    severity_delta: -1
+    note: "IDS 심각도 낮음"
+incident_key: [source.ip]
+tags: [ids]

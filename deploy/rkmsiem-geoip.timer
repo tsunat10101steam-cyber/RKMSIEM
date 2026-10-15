@@ -1,0 +1,10 @@
+[Unit]
+Description=RKMSIEM 위치 DB 매달 갱신 (DB-IP Lite 는 매달 초 새 버전)
+
+[Timer]
+OnCalendar=*-*-05 04:30
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

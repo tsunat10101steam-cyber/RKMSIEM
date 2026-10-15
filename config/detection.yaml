@@ -1,0 +1,27 @@
+# 탐지 공통 정책 (모든 규칙에 적용)
+severity_risk:            # 심각도별 기본 위험 점수
+  info: 5
+  low: 15
+  medium: 40
+  high: 70
+  critical: 90
+risk_per_event: 0.2       # 근거 이벤트 1건당 가산점
+risk_max: 100
+default_suppress_sec: 3600  # 같은 규칙·같은 그룹의 경보를 하나로 묶는 기간 (중복 경보 억제)
+evidence_cap: 50          # 경보에 보관하는 근거 이벤트 id 최대 개수
+
+global_exceptions:        # 예외: 탐지 대상에서 제외
+  - {field: source.ip, op: in_list, value: allowlist}
+
+global_modifiers:         # 위험도 보정
+  - when: [{field: source.ip, op: in_list, value: internal_networks}]
+    severity_delta: -1
+    note: "사내망 IP — 직원 오타 가능성으로 한 단계 낮춤"
+
+# 대시보드 위협 수준 (국가 사이버위기 경보 5단계 표기). 위에서부터 먼저 맞는 단계가 적용됨.
+threat_levels:
+  - {id: severe,   label: 심각, en: SEVERE,   any_level_ids: [COMPROMISE, NO_LOCKOUT]}
+  - {id: high,     label: 경계, en: HIGH,     min_severity: critical, any_rule_ids: [distributed_attack]}
+  - {id: elevated, label: 주의, en: ELEVATED, min_severity: high}
+  - {id: guarded,  label: 관심, en: GUARDED,  min_severity: medium}
+  - {id: normal,   label: 정상, en: NORMAL}

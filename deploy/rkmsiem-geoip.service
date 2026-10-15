@@ -1,0 +1,8 @@
+[Unit]
+Description=RKMSIEM 위치 DB(DB-IP Lite) 갱신
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/rkmsiem/geoip-update

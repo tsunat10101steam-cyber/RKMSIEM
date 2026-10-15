@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RKMSIEM 콘솔</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg" id="favicon">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Nanum+Gothic+Coding:wght@400;700&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="term" id="term">
+  <div class="titlebar">
+    <span class="mini-logo">RKMSIEM</span><span class="sep">│</span>
+    <span id="who">로그인 전</span><span class="sep">│</span>
+    <span id="clock"></span>
+    <span class="grow"></span>
+    <span class="conn" id="conn" title="실시간 연결 상태"><i></i><span>오프라인</span></span>
+    <span class="mode" id="mode" title="플레이북 실행 모드">-</span>
+    <span class="lv" id="tbLevel"></span>
+  </div>
+
+  <main class="out" id="out" aria-live="polite"></main>
+
+  <div class="prompt-area hidden" id="promptArea">
+    <div class="ticker" id="ticker"></div>
+    <label class="prompt" for="cmd">
+      <span class="ps" id="ps">guest@rkmsiem:<span class="path">~</span>$</span>
+      <input id="cmd" autocomplete="off" spellcheck="false" placeholder="login 으로 시작 · help 로 전체 명령 보기">
+    </label>
+    <div class="chips" id="chips"></div>
+  </div>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div id="tip" role="tooltip"></div>
+<div id="flash" aria-hidden="true"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/motion@11.11.13/dist/motion.js"></script>
+<script src="/static/automation.js"></script>
+<script src="/static/settings.js"></script>
+<script src="/static/team.js"></script>
+<script src="/static/topology.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

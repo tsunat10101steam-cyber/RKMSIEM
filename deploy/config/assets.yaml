@@ -1,0 +1,6 @@
+# 운영 자산 인벤토리 — 계정 존재·권한 그룹은 서버의 /etc/passwd·group 에서 자동 조회(linux_local).
+# 여기에는 시스템에 없는 업무 정보(소유 부서·중요도)만 덧붙인다.
+sample: false
+accounts: []
+#  - {name: deploy, owner: 플랫폼팀, criticality: high, privileged: true}
+hosts: []

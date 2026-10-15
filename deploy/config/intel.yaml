@@ -1,0 +1,11 @@
+# 운영 위협 인텔 — 공개 차단 목록 피드를 주기적으로 내려받아 IP 평판에 사용 (실제 데이터)
+sample: false
+entries: []          # 조직 자체 차단/의심 목록: - {indicator: 198.51.100.0/24, verdict: malicious, confidence: 90, note: "..."}
+feeds:
+  - {name: firehol_level1, enabled: true, verdict: malicious, confidence: 80, refresh_hours: 12,
+     url: "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset",
+     description: "FireHOL Level1 — 공격·악성 활동이 확인된 대역 (오탐 매우 낮음)"}
+  - {name: spamhaus_drop, enabled: true, verdict: malicious, confidence: 90, refresh_hours: 24,
+     url: "https://www.spamhaus.org/drop/drop.txt", description: "Spamhaus DROP — 탈취·범죄 운영 대역"}
+  - {name: feodo_c2, enabled: true, verdict: malicious, confidence: 85, refresh_hours: 6,
+     url: "https://feodotracker.abuse.ch/downloads/ipblocklist.txt", description: "abuse.ch Feodo Tracker — 봇넷 C2"}

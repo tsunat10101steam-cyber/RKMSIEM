@@ -1,0 +1,18 @@
+id: slow_bruteforce
+name: 저속 대입
+enabled: true
+type: threshold
+where:
+  - {field: event.category, op: contains, value: authentication}
+  - {field: event.outcome, op: eq, value: failure}
+group_by: [source.ip]
+window_sec: 86400
+levels:
+  - id: SLOW
+    min: 10
+    severity: medium
+    title: 저속 대입
+unless_rules: [auth_bruteforce, password_spray]   # 이미 더 강한 규칙에 걸린 IP 는 제외
+unless_match_fields: [source.ip]
+unless_lookback_sec: 86400
+incident_key: [source.ip]

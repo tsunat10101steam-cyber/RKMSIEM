@@ -1,0 +1,24 @@
+id: no_lockout
+name: 잠금 미적용
+enabled: true
+type: sequence
+where: []
+group_by: [source.ip, user.name]
+first:
+  where:
+    - {field: event.category, op: contains, value: authentication}
+    - {field: event.outcome, op: eq, value: failure}
+  window_sec: 900                   # 15분 안에 기준 횟수 도달
+then:
+  where:
+    - {field: event.category, op: contains, value: authentication}
+    - {field: event.outcome, op: eq, value: success}
+  within_sec: 900                   # 마지막 실패 후 15분(잠금 유지 시간) 안에 성공
+  lookback_sec: 1800
+reset_on_then: true
+levels:
+  - id: NO_LOCKOUT
+    min: 5
+    severity: critical
+    title: 잠금 미적용
+incident_key: [source.ip]

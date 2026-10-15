@@ -1,0 +1,71 @@
+# 데이터 소스 (수집기 플러그인). type 은 수집기, parser 는 파서 이름.
+sources:
+  - id: sample-authlog
+    type: file
+    parser: authlog
+    enabled: true
+    sample: true                 # 예제 데이터 — UI 에 '샘플' 표시, 운영 데이터와 구분
+    dataset: auth.sample
+    options:
+      path: samples/auth.log
+      from_beginning: true
+      poll_sec: 1.0
+      timezone: Asia/Seoul
+      category: authentication
+      outcome_map: {FAIL: failure, SUCCESS: success}
+
+  - id: http-json
+    type: http                   # POST /api/ingest/http-json (수집 API 키 필요)
+    parser: json
+    enabled: true
+    dataset: http.events
+    options:
+      timezone: UTC
+      default_category: authentication
+      field_map:                 # 정규화 필드 ← 입력 JSON 경로
+        "@timestamp": timestamp
+        event.id: id
+        event.action: action
+        event.outcome: outcome
+        event.category: category
+        source.ip: src_ip
+        destination.ip: dst_ip
+        destination.port: dst_port
+        user.name: user
+        host.name: host
+        message: message
+
+  - id: syslog-udp
+    type: syslog_udp
+    parser: syslog
+    enabled: true
+    dataset: syslog
+    options:
+      host: 127.0.0.1
+      port: 5514
+      timezone: Asia/Seoul
+      extract:                   # 메시지에서 필드 추출 (프로그램별 정규식)
+        - program: sshd
+          pattern: 'Failed (?:password|publickey) for (?:invalid user )?(?P<user>\S+) from (?P<ip>[0-9a-fA-F:.]+)'
+          category: authentication
+          outcome: failure
+          action: ssh_login
+        - program: sshd
+          pattern: 'Accepted \S+ for (?P<user>\S+) from (?P<ip>[0-9a-fA-F:.]+)'
+          category: authentication
+          outcome: success
+          action: ssh_login
+        - program: sudo
+          pattern: '(?P<user>\S+) : .*COMMAND='
+          category: iam
+          outcome: success
+          action: privilege_use
+
+  - id: suricata-eve               # Suricata IDS 의 eve.json — IDS 서버의 rkmsiem-ship-eve 가 POST /api/ingest/suricata-eve 로 보냄
+    type: http
+    parser: suricata_eve
+    enabled: true
+    dataset: suricata.eve
+    options:
+      timezone: UTC                # eve 의 timestamp 는 오프셋이 붙어 있어 그대로 해석됨
+      event_types: [alert, anomaly]

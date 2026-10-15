@@ -1,0 +1,21 @@
+# 역할별 권한 (최소 권한). API 는 백엔드에서 이 권한으로 검사한다.
+roles:
+  admin:
+    label: 관리자
+    permissions: [events:read, alerts:read, alerts:write, incidents:read, incidents:write, incidents:assign,
+                  rules:read, rules:write, rules:simulate, playbooks:read, playbooks:write, playbooks:run,
+                  runs:read, runs:approve, runs:cancel, audit:read, config:read, config:write,
+                  users:write, metrics:read, collectors:read, dlq:read, dlq:replay]
+  analyst:
+    label: 분석가
+    permissions: [events:read, alerts:read, alerts:write, incidents:read, incidents:write, incidents:assign,
+                  rules:read, rules:simulate, playbooks:read, playbooks:run, runs:read,
+                  metrics:read, collectors:read, dlq:read]
+  responder:
+    label: 대응 담당자
+    permissions: [events:read, alerts:read, incidents:read, incidents:write, playbooks:read, playbooks:run,
+                  runs:read, runs:approve, runs:cancel, collectors:read, metrics:read]
+  viewer:
+    label: 읽기 전용
+    permissions: [events:read, alerts:read, incidents:read, rules:read, playbooks:read, runs:read,
+                  collectors:read, metrics:read]

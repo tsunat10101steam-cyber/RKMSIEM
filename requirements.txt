@@ -1,0 +1,8 @@
+# RKMSIEM 런타임/테스트 의존성 (Python 3.12+ 확인, 개발 환경 3.15)
+Flask>=3.1        # HTTP API · SSE · UI 서빙
+ruamel.yaml>=0.18 # 설정/규칙/플레이북 YAML (순수 파이썬 모드 사용 — C 컴파일러 불필요)
+jsonschema>=4.20  # 설정·이벤트·API 입력 스키마 검증
+pytest>=8         # 테스트
+tzdata>=2024.1    # 시간대 DB (시스템 zoneinfo 가 없는 최소 설치·컨테이너 대비)
+reportlab>=4.0     # PDF 보고서 (사건·기간 요약) — 한글 폰트는 apt fonts-nanum
+cryptography>=42   # 웹에서 입력한 SMTP 비밀번호·API 키 암호화 저장 (Fernet)

@@ -1,0 +1,22 @@
+#!/usr/sbin/nft -f
+# RKMSIEM 차단 테이블 — 서비스 시작 시(ExecStartPre) root 로 적용된다.
+# 다른 방화벽(ufw/기존 nftables 규칙)과 독립된 별도 테이블이라 서로 덮어쓰지 않는다.
+# 테이블을 다시 만들면 세트가 비므로, RKMSIEM 이 시작하면서 DB 의 유효한 차단 목록을 다시 채운다(reconcile).
+table inet rkmsiem
+delete table inet rkmsiem
+
+table inet rkmsiem {
+	set blocklist4 {
+		type ipv4_addr
+		flags timeout
+	}
+	set blocklist6 {
+		type ipv6_addr
+		flags timeout
+	}
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		ip saddr @blocklist4 counter drop
+		ip6 saddr @blocklist6 counter drop
+	}
+}

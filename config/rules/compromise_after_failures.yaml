@@ -1,0 +1,23 @@
+id: compromise_after_failures
+name: 대입 후 로그인 성공
+enabled: true
+type: sequence
+where: []
+group_by: [source.ip, user.name]
+first:                              # 직전 성공 이후 누적 실패 (시간 제한 없음)
+  where:
+    - {field: event.category, op: contains, value: authentication}
+    - {field: event.outcome, op: eq, value: failure}
+  window_sec: null
+then:
+  where:
+    - {field: event.category, op: contains, value: authentication}
+    - {field: event.outcome, op: eq, value: success}
+  within_sec: null
+reset_on_then: true
+levels:
+  - id: COMPROMISE
+    min: 5
+    severity: critical
+    title: 대입 후 로그인 성공
+incident_key: [source.ip]

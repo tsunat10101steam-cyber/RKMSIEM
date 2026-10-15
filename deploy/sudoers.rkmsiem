@@ -1,0 +1,4 @@
+# /etc/sudoers.d/rkmsiem (0440) — rkmsiem 서비스 계정은 계정 잠금 헬퍼 하나만 root 로 실행할 수 있다.
+# Defaults 줄은 두지 않는다 — Ubuntu 26.04 의 sudo-rs 는 requiretty·lecture 를 모르는 설정으로 거부함.
+# (env_reset 은 sudo·sudo-rs 모두 기본값이고, requiretty 는 Ubuntu 에서 원래 꺼져 있음)
+rkmsiem ALL=(root) NOPASSWD: /usr/local/lib/rkmsiem/rkmsiem-account

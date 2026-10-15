@@ -1,0 +1,20 @@
+id: manual_enrichment
+name: 수동 정보 보강
+description: 분석가가 사건에서 직접 실행 — 평판·자산 조회 후 기록 (변경 작업 없음)
+enabled: true
+trigger:
+  on: manual
+steps:
+  - id: reputation
+    action: ip_reputation
+    input: {ip: "{{alert.group.source.ip}}"}
+    when: [{field: alert.group.source.ip, op: exists}]
+    on_failure: continue
+  - id: asset
+    action: asset_lookup
+    input: {account: "{{alert.group.user.name}}"}
+    when: [{field: alert.group.user.name, op: exists}]
+    on_failure: continue
+  - id: record
+    action: record_result
+    input: {summary: "수동 보강 — 평판 {{steps.reputation.output.verdict}} · 자산 {{steps.asset.output.owner}}"}

@@ -1,0 +1,18 @@
+# 로컬 위협 인텔(IP 평판) — ⚠ 예제(샘플) 데이터. 실제 TI 피드 어댑터로 교체 가능.
+sample: true
+entries:
+  - {indicator: 185.220.101.0/24, verdict: malicious, confidence: 85, note: "샘플: Tor 출구 노드 대역 예시"}
+  - {indicator: 45.155.205.0/24,  verdict: malicious, confidence: 70, note: "샘플: 스캐닝 호스팅 대역 예시"}
+  - {indicator: 141.98.11.0/24,   verdict: suspicious, confidence: 60, note: "샘플: 무차별 대입 보고 대역 예시"}
+  - {indicator: 103.75.190.8/32,  verdict: malicious, confidence: 90, note: "샘플: 침해 연관 IP 예시"}
+  - {indicator: 91.240.118.0/24,  verdict: suspicious, confidence: 55, note: "샘플: 크리덴셜 스터핑 보고 대역 예시"}
+
+# 공개 차단 목록 피드 (https 만). 개발 설정에서는 꺼 둠 — Ubuntu 배포 설정(deploy/config/intel.yaml)에서 켬.
+feeds:
+  - {name: firehol_level1, enabled: false, verdict: malicious, confidence: 80, refresh_hours: 12,
+     url: "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset",
+     description: "FireHOL Level1 — 공격·악성 활동이 확인된 대역 (오탐 매우 낮음)"}
+  - {name: spamhaus_drop, enabled: false, verdict: malicious, confidence: 90, refresh_hours: 24,
+     url: "https://www.spamhaus.org/drop/drop.txt", description: "Spamhaus DROP — 탈취·범죄 운영 대역"}
+  - {name: feodo_c2, enabled: false, verdict: malicious, confidence: 85, refresh_hours: 6,
+     url: "https://feodotracker.abuse.ch/downloads/ipblocklist.txt", description: "abuse.ch Feodo Tracker — 봇넷 C2"}

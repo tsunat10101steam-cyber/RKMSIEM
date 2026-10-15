@@ -1,0 +1,17 @@
+# ⚠ 미검증(이 PC 에 Docker 없음). 개발 환경 재현용 예시입니다.
+# 운영 배포 시: TLS 종단(리버스 프록시), 비밀 관리(Docker secrets/Vault), 외부 포트 최소화, 볼륨 백업을 별도로 구성하세요.
+services:
+  rkmsiem:
+    build: .
+    env_file: .env                 # RKMSIEM_ADMIN_PASSWORD, RKMSIEM_INGEST_KEYS (커밋 금지)
+    environment:
+      RKMSIEM_SOAR__MODE: simulate
+      RKMSIEM_SOURCES_NOTE: "syslog-udp 는 config/sources.yaml 의 host 를 0.0.0.0 으로 바꿔야 컨테이너 밖에서 수신"
+    ports:
+      - "127.0.0.1:8088:8088"
+      - "127.0.0.1:5514:5514/udp"
+    volumes:
+      - rkmsiem-data:/app/data
+    restart: unless-stopped
+volumes:
+  rkmsiem-data:

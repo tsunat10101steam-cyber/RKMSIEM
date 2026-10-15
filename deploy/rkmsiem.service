@@ -1,0 +1,40 @@
+[Unit]
+Description=RKMSIEM — SIEM/SOAR
+Documentation=file:///opt/rkmsiem/README.md
+After=network-online.target rsyslog.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rkmsiem
+Group=rkmsiem
+# auth.log 읽기(adm) · 저널 읽기(systemd-journal)
+SupplementaryGroups=adm systemd-journal
+EnvironmentFile=/etc/rkmsiem/rkmsiem.env
+Environment=RKMSIEM_CONFIG_DIR=/etc/rkmsiem/config
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/rkmsiem
+# 차단 테이블을 root 로 (재)생성 — '+' 는 이 줄만 전체 권한으로 실행
+ExecStartPre=+/usr/sbin/nft -f /etc/rkmsiem/rkmsiem.nft
+ExecStart=/opt/rkmsiem/venv/bin/python -m rkmsiem serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+# nft 세트에 차단 IP 를 넣기 위한 권한만 부여 (root 아님)
+AmbientCapabilities=CAP_NET_ADMIN
+# 계정 잠금 헬퍼를 sudo 로 실행하므로 NoNewPrivileges/CapabilityBoundingSet/ProtectSystem=strict 는 쓰지 않는다.
+# 계정 잠금을 끄는 경우(install.sh --no-account-lock) drop-in 으로 더 강하게 잠근다.
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+RestrictRealtime=yes
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

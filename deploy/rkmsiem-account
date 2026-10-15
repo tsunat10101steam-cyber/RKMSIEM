@@ -1,0 +1,55 @@
+#!/bin/bash
+# RKMSIEM 계정 잠금 헬퍼 — /usr/local/lib/rkmsiem/rkmsiem-account (root 소유, 0755)
+# sudoers 로 rkmsiem 서비스 계정에게 '이 파일 하나만' 허용한다. 입력은 여기서 다시 검증한다.
+#   rkmsiem-account check
+#   rkmsiem-account lock <user> [--kill-sessions]   → 비밀번호 잠금 + 계정 만료(키 인증 SSH 도 차단) [+ 세션 종료]
+#   rkmsiem-account unlock <user>                   → 만료 해제 + 비밀번호 잠금 해제
+# 결과는 마지막 줄에 JSON 한 줄로 출력.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
+
+MIN_UID=1000
+PROTECTED_ACCOUNTS=""
+CONF=/etc/rkmsiem/account-helper.conf
+if [ -f "$CONF" ] && [ "$(stat -c %U "$CONF")" = root ]; then
+	# shellcheck disable=SC1090
+	. "$CONF"
+fi
+
+fail() { printf '{"ok":false,"error":"%s"}\n' "$1"; exit "${2:-1}"; }
+
+op="${1:-}"
+user="${2:-}"
+opt="${3:-}"
+
+case "$op" in
+	check) printf '{"ok":true,"helper":"rkmsiem-account","version":1,"min_uid":%d}\n' "$MIN_UID"; exit 0 ;;
+	lock|unlock) ;;
+	*) fail "usage: check | lock <user> [--kill-sessions] | unlock <user>" 2 ;;
+esac
+
+[[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}\$?$ ]] || fail "invalid username" 2
+ent="$(getent passwd -- "$user")" || fail "no such user" 3
+uid="$(cut -d: -f3 <<<"$ent")"
+(( uid >= MIN_UID )) || fail "uid $uid is a system account (< $MIN_UID)" 4
+for p in root $PROTECTED_ACCOUNTS; do
+	[ "$p" = "$user" ] && fail "protected account" 4
+done
+
+if [ "$op" = lock ]; then
+	usermod --lock -- "$user" >/dev/null
+	usermod --expiredate 1 -- "$user" >/dev/null      # 만료 → 공개키 인증도 거부됨
+	killed=0
+	if [ "$opt" = "--kill-sessions" ] && pkill -KILL -u "$user"; then
+		killed=1
+	fi
+	logger -t rkmsiem-account -- "locked account $user (uid $uid) sessions_killed=$killed"
+	printf '{"ok":true,"op":"lock","user":"%s","uid":%d,"sessions_killed":%d}\n' "$user" "$uid" "$killed"
+else
+	usermod --expiredate '' -- "$user" >/dev/null
+	pw_unlocked=1
+	usermod --unlock -- "$user" >/dev/null 2>&1 || pw_unlocked=0   # 비밀번호 없는(키 전용) 계정은 실패가 정상
+	logger -t rkmsiem-account -- "unlocked account $user (uid $uid)"
+	printf '{"ok":true,"op":"unlock","user":"%s","uid":%d,"password_unlocked":%d}\n' "$user" "$uid" "$pw_unlocked"
+fi

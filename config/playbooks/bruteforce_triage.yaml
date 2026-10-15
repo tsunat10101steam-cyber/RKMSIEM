@@ -1,0 +1,27 @@
+id: bruteforce_triage
+name: 무차별 대입 1차 분류
+description: 무차별 대입(심각) 경보 → 평판 조회 → 알림 → (악성이면) 차단 승인 요청 → 기록
+enabled: true
+trigger:
+  on: alert
+  where:
+    - {field: alert.level_id, op: in, value: [BRUTEFORCE_HIGH, KISA_OVER]}
+steps:
+  - id: reputation
+    action: ip_reputation
+    input: {ip: "{{alert.group.source.ip}}"}
+    retries: 2
+    on_failure: continue
+  - id: notify_soc
+    action: notify
+    input: {channel: soc, message: "[무차별 대입] {{alert.group.source.ip}} — {{alert.title}} (사건 #{{incident.id}})"}
+  - id: block_ip
+    action: block_ip
+    approval: policy
+    when: [{field: steps.reputation.output.verdict, op: in, value: [malicious, suspicious]}]
+    input: {ip: "{{alert.group.source.ip}}", duration_sec: 3600, reason: "무차별 대입 사건 #{{incident.id}}"}
+    on_failure: continue
+    compensate: {action: unblock_ip, input: {ip: "{{alert.group.source.ip}}"}}
+  - id: record
+    action: record_result
+    input: {summary: "1차 분류 완료 — 평판 {{steps.reputation.output.verdict}}"}

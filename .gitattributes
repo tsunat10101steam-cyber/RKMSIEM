@@ -1,0 +1,6 @@
+*.sh text eol=lf
+deploy/* text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.service text eol=lf
+*.nft text eol=lf

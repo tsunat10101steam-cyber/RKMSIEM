@@ -1,0 +1,12 @@
+# 자산/계정 인벤토리 — ⚠ 예제(샘플) 데이터. 운영 시 실제 CMDB/IAM 연동 어댑터로 교체.
+sample: true
+accounts:
+  - {name: backup,  owner: 인프라팀, criticality: high,   privileged: true}
+  - {name: admin,   owner: 인프라팀, criticality: high,   privileged: true}
+  - {name: root,    owner: 인프라팀, criticality: high,   privileged: true}
+  - {name: oracle,  owner: DB팀,    criticality: high,   privileged: true}
+  - {name: support, owner: 고객지원팀, criticality: medium, privileged: false}
+  - {name: kim,     owner: 영업팀,   criticality: low,    privileged: false}
+  - {name: jang,    owner: 개발팀,   criticality: medium, privileged: false}
+hosts:
+  - {name: auth-gw-01, ip: 10.0.0.2, role: 인증 게이트웨이, criticality: high}

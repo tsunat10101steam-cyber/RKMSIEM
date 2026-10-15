@@ -1,0 +1,21 @@
+[Unit]
+Description=Suricata eve.json → RKMSIEM 전송기
+After=network-online.target suricata.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/rkmsiem-ship.env
+ExecStart=/usr/bin/python3 /usr/local/lib/rkmsiem-ship/rkmsiem-ship-eve.py
+Restart=always
+RestartSec=5
+# eve.json 읽기 · 위치 파일 쓰기만 필요
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/rkmsiem-ship
+ReadOnlyPaths=/var/log/suricata
+
+[Install]
+WantedBy=multi-user.target

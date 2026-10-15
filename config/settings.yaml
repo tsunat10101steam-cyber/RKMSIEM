@@ -1,0 +1,122 @@
+# RKMSIEM 런타임 설정 — 환경 변수 RKMSIEM_<섹션>__<키> 로 덮어쓸 수 있음 (예: RKMSIEM_API__PORT=9000)
+# 비밀 정보(관리자 초기 비밀번호, 수집 API 키)는 여기에 쓰지 말고 환경 변수로 넣는다 (.env.example 참고).
+env: dev
+timezone: Asia/Seoul
+plugins: []                 # 추가 수집기/파서/액션 모듈 (예: ["myplugins.firewall"])
+
+database:
+  path: data/rkmsiem.db
+
+pipeline:
+  queue_size: 20000         # 가득 차면 HTTP 는 429, 파일 수집기는 대기(백프레셔), UDP 는 드롭 계수
+  batch_size: 500
+  batch_wait_ms: 100
+  enqueue_timeout_sec: 2
+  retry:
+    max_attempts: 3
+    backoff_ms: 200
+
+retention:
+  raw_days: 30
+  events_days: 90
+  alerts_days: 365
+  archive_dir: data/archive
+  check_interval_sec: 3600
+
+incidents:
+  group_window_sec: 86400   # 같은 상관 키의 경보를 같은 사건으로 묶는 기간
+
+soar:
+  mode: simulate            # simulate(기본, 외부 변경 없음) | live
+  worker_poll_ms: 300
+  max_concurrent_runs: 4
+
+api:
+  host: 127.0.0.1
+  port: 8088
+  token_ttl_sec: 28800
+  stream_ticket_ttl_sec: 60
+  max_body_kb: 1024
+  login_rate_per_min: 10
+  stream_heartbeat_sec: 15
+
+geo:
+  server_name: 관제 서버 (서울)
+  server_lat: 37.57
+  server_lon: 126.98
+  geolite2_db: data/GeoLite2-City.mmdb     # 있으면 실제 DB 사용 (geoip2 패키지 필요)
+  sample_file: samples/geoip_sample.json   # 없을 때 쓰는 데모용 추정 표 (UI 에 '샘플' 표시)
+
+intel_feed_dir: data/feeds          # 위협 인텔 피드 저장 위치 (config/intel.yaml 의 feeds)
+
+# IP 평판 외부 조회 — API 키는 여기 말고 환경 변수 RKMSIEM_ABUSEIPDB_KEY (운영: /etc/rkmsiem/rkmsiem.env) 에만
+reputation:
+  abuseipdb:
+    enabled: true                   # 키가 없으면 자동으로 꺼짐 (공개 피드·로컬 항목만 사용)
+    max_age_days: 90                # 최근 N일 신고만 반영
+    timeout_sec: 5
+    cache_ttl_sec: 21600            # 같은 IP 는 6시간 동안 다시 묻지 않음 (무료 한도 하루 1,000건)
+    malicious_score: 75             # 신뢰도 점수 ≥ 75 → malicious
+    suspicious_score: 25            # ≥ 25 → suspicious, 그 아래는 unknown (화이트리스트면 clean)
+
+# 담당자 명단 — 별도 '담당자 관리' 앱(python -m staffdir serve, 기본 8090)에서 가져옴
+#   연동 키는 여기 말고 환경 변수 RKMSIEM_STAFF_SYNC_KEY (담당자 앱의 STAFF_SYNC_KEYS 와 같은 값)
+#   url 을 비우면 연동하지 않고 마지막으로 받은(또는 처음 옮겨 둔) 명단을 그대로 씀
+staff:
+  url: ""                           # RKMSIEM 이 명단을 가져갈 주소 (예: http://127.0.0.1:8090)
+  public_url: ""                    # 화면의 '담당자 관리 열기' 링크 — 비우면 접속한 주소의 8090 포트
+  sync_interval_sec: 60
+  timeout_sec: 5
+
+# 메일 (SMTP) — 비밀번호는 여기 말고 환경 변수 RKMSIEM_SMTP_PASSWORD (운영: /etc/rkmsiem/rkmsiem.env) 에만
+#   Gmail: host smtp.gmail.com · port 587 · starttls · username 계정 · 비밀번호는 '앱 비밀번호'
+#   Naver: host smtp.naver.com · port 587 · starttls (메일 환경설정에서 SMTP 사용 켜기)
+#   사내 릴레이: port 25 · security none · username 비움
+mail:
+  enabled: false
+  host: ""
+  port: 587
+  security: starttls                # starttls(587) | ssl(465) | none
+  username: ""                      # 비우면 로그인 없이 보냄 (사내 릴레이)
+  from: ""                          # 예: "RKMSIEM <soc@example.com>" (Gmail·Naver 는 로그인 계정 주소와 같아야 함)
+  subject_prefix: "[RKMSIEM]"
+  console_url: ""                   # 메일 본문에 넣을 콘솔 주소 (예: http://1.1.12.135:8088)
+  timeout_sec: 15
+  retries: 3
+  max_per_hour: 60                  # 시간당 발송 상한 (폭주 방지)
+  max_size_mb: 15
+  allowed_recipients: []            # 받는 사람 허용 목록: "a@corp.com" 또는 "@corp.com". 아래 to 에 적은 주소는 자동 허용
+  alerts:                           # 실시간 알림 메일
+    enabled: true
+    to: []                          # 받는 사람 (비우면 알림 메일 안 보냄)
+    min_severity: high              # 이 심각도 이상 경보만 (critical | high | medium | low)
+    batch_sec: 60                   # 이 시간 동안 생긴 경보를 한 통으로 묶음
+    approvals: true                 # 플레이북 승인 요청도 메일로
+
+# PDF 보고서 — 한글 폰트 필요 (Ubuntu: apt install fonts-nanum, install.sh 가 설치)
+reports:
+  font: ""                          # 비우면 NanumGothic → Noto CJK → 맑은 고딕 순으로 자동 탐색
+  incident_on_close:                # 사건을 '해결'·'오탐'으로 닫으면 사건 보고서를 메일로
+    enabled: false
+    to: []
+  schedule:                         # 정기 요약 보고서 (서버 시간대 기준, 메일 설정 필요)
+    - {name: daily, every: day, at: "09:00", period_hours: 24, to: [], enabled: false}
+    - {name: weekly, every: monday, at: "09:00", period_hours: 168, to: [], enabled: false}
+
+# 실제 대응 어댑터 — 기본은 none(플랫폼 DB 기록만). Ubuntu 배포 시 deploy/install.sh 가 켬.
+response:
+  firewall:
+    backend: none                   # none | nftables
+    nft: /usr/sbin/nft
+    table: rkmsiem
+    set_v4: blocklist4
+    set_v6: blocklist6
+    sudo: false                     # systemd 에서 CAP_NET_ADMIN 을 주면 sudo 불필요
+  accounts:
+    backend: none                   # none | helper (root 헬퍼 + sudoers 1줄)
+    helper: /usr/local/lib/rkmsiem/rkmsiem-account
+    sudo: true
+    kill_sessions: true             # 잠글 때 그 계정의 접속 세션도 종료
+  assets:
+    backend: inventory              # inventory | linux_local (/etc/passwd·group 조회 + 인벤토리)
+    privileged_groups: [sudo, adm, wheel, root]

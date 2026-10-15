@@ -1,0 +1,19 @@
+id: repeated_connection
+name: 반복 연결
+enabled: true
+type: threshold
+where:
+  - {field: event.category, op: contains, value: network}
+  - {field: event.action, op: eq, value: connection_attempt}
+group_by: [source.ip, destination.port]
+window_sec: 60
+levels:
+  - id: CONN_FLOOD
+    min: 20
+    severity: medium
+    title: 반복 연결
+  - id: CONN_FLOOD_HIGH
+    min: 100
+    severity: high
+    title: 대량 연결
+incident_key: [source.ip]

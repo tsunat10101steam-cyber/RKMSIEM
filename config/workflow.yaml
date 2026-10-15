@@ -1,0 +1,16 @@
+# 사건 상태 워크플로
+states:
+  - {id: new, label: 신규}
+  - {id: investigating, label: 조사 중}
+  - {id: responding, label: 대응 중}
+  - {id: resolved, label: 해결, terminal: true}
+  - {id: false_positive, label: 오탐, terminal: true}
+initial: new
+transitions:
+  - {from: new, to: [investigating, false_positive], require_reason: false}
+  - {from: investigating, to: [responding, resolved, false_positive]}
+  - {from: responding, to: [resolved, investigating]}
+  - {from: resolved, to: [investigating], require_reason: true}        # 재오픈은 사유 필수
+  - {from: false_positive, to: [investigating], require_reason: true}
+grouping:
+  window_sec: 86400

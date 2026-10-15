@@ -1,0 +1,24 @@
+id: spray_success
+name: 스프레이 후 로그인 성공
+enabled: true
+type: sequence
+where: []
+group_by: [source.ip]
+first:
+  where:
+    - {field: event.category, op: contains, value: authentication}
+    - {field: event.outcome, op: eq, value: failure}
+  window_sec: 900
+  distinct_field: user.name         # 서로 다른 계정 수로 판단
+then:
+  where:
+    - {field: event.category, op: contains, value: authentication}
+    - {field: event.outcome, op: eq, value: success}
+  within_sec: 86400
+reset_on_then: false
+levels:
+  - id: COMPROMISE
+    min: 5
+    severity: critical
+    title: 스프레이 후 로그인 성공
+incident_key: [source.ip]

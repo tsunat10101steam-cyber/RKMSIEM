@@ -1,0 +1,16 @@
+id: distributed_attack
+name: 분산 대입
+enabled: true
+type: distinct_count
+where:
+  - {field: event.category, op: contains, value: authentication}
+  - {field: event.outcome, op: eq, value: failure}
+group_by: [user.name]
+distinct_field: source.ip
+window_sec: 600
+levels:
+  - id: BOTNET
+    min: 30
+    severity: high
+    title: 분산 대입
+incident_key: [user.name]

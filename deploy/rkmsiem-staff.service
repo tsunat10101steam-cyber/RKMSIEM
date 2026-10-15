@@ -1,0 +1,40 @@
+[Unit]
+Description=RKMSIEM 담당자 관리 (담당자 명단 — RKMSIEM 과 별도 프로세스)
+Documentation=file:///opt/rkmsiem/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rkmsiem
+Group=rkmsiem
+# STAFF_SYNC_KEYS(연동 키) · STAFF_HOST · STAFF_NOTIFY_URL — root 0600
+EnvironmentFile=/etc/rkmsiem/staff.env
+Environment=STAFF_DB=/var/lib/rkmsiem/staff/staff.db
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/rkmsiem
+ExecStart=/opt/rkmsiem/venv/bin/python -m staffdir serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+# 네트워크·파일 외에는 권한이 필요 없음 → 강하게 격리
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rkmsiem/staff
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

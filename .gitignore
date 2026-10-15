@@ -1,0 +1,12 @@
+.env
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+*.db
+*.db-*
+secret.key
+auth.log
+reports/
+.claude/
