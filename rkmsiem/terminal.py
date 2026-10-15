@@ -25,6 +25,11 @@ from collections import deque
 
 log = logging.getLogger("rkmsiem.terminal")
 LOGIN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,31}$")
+# 구형 장비(오래된 스위치·라우터 펌웨어) 호환: 기본으로 꺼진 옛 암호 방식을 '목록 끝에 추가' 만 한다.
+# 최신 방식이 먼저라 상대가 지원하면 그쪽이 고르고, 옛 방식만 아는 장비에서만 옛 방식으로 붙는다. 접속할 때 사람이 고른 경우에만.
+LEGACY_OPTS = ["-o", "KexAlgorithms=+diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1",
+               "-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss", "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
+               "-o", "Ciphers=+aes128-cbc,aes192-cbc,aes256-cbc,3des-cbc", "-o", "MACs=+hmac-sha1,hmac-md5"]
 BUF_MAX = 256 * 1024          # 세션마다 기억하는 최근 출력 (다시 붙을 때 화면 복원용)
 
 
@@ -80,6 +85,7 @@ class Session:
         self.buf, self.base = bytearray(), 0          # base = buf[0] 의 전체 출력 기준 위치
         self.bytes_in = self.bytes_out = 0
         self.closed, self.exit_code, self.reason = False, None, None
+        self.legacy = False
         self.cond = threading.Condition()
 
     @property
@@ -88,7 +94,7 @@ class Session:
 
     def info(self):
         return {"id": self.id, "owner": self.owner, "ip": self.ip, "login": self.login, "port": self.port, "created": self.created,
-                "last_active": self.last_active, "closed": self.closed, "exit_code": self.exit_code, "reason": self.reason}
+                "last_active": self.last_active, "closed": self.closed, "exit_code": self.exit_code, "reason": self.reason, "legacy": self.legacy}
 
 
 class TerminalManager:
@@ -123,7 +129,7 @@ class TerminalManager:
             raise TerminalError(403, f"{ip} 는 토폴로지에서 SIEM 과 와이어로 연결돼 있지 않습니다 — 연결 후 '저장' 하세요")
         return path
 
-    def argv(self, ip, login, port):
+    def argv(self, ip, login, port, legacy=False):
         ssh = shutil.which("ssh")
         if not ssh:
             raise TerminalError(503, "ssh 클라이언트가 없습니다 (sudo apt install openssh-client)")
@@ -131,10 +137,10 @@ class TerminalManager:
         return [ssh, "-F", "/dev/null", "-o", "EscapeChar=none", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
                 "-o", "PermitLocalCommand=no", "-o", "StrictHostKeyChecking=ask", "-o", f"UserKnownHostsFile={os.path.join(self.dir, 'known_hosts')}",
                 "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=4",
-                "-p", str(port), "-l", login, ip]
+                *(LEGACY_OPTS if legacy else []), "-p", str(port), "-l", login, ip]
 
     # -------------------------------------------------------------- 열기·닫기
-    def open(self, user, ip, login, port=22, cols=100, rows=30):
+    def open(self, user, ip, login, port=22, cols=100, rows=30, legacy=False):
         if not LOGIN_RE.match(login or ""):
             raise TerminalError(400, "접속 계정 이름 형식이 올바르지 않습니다")
         if port not in self.ports:
@@ -145,7 +151,7 @@ class TerminalManager:
             if len(mine) >= self.max_per_user:
                 raise TerminalError(429, f"동시에 열 수 있는 터미널은 {self.max_per_user}개입니다 — 쓰지 않는 창을 닫으세요")
         os.makedirs(self.dir, mode=0o700, exist_ok=True)
-        argv = self.argv(ip, login, port)
+        argv = self.argv(ip, login, port, legacy=legacy)
         master, slave = os.openpty()
         _winsize(slave, rows, cols)
         env = {"TERM": "xterm-256color", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": "/usr/bin:/bin", "HOME": self.dir}
@@ -165,14 +171,15 @@ class TerminalManager:
         sid = secrets.token_urlsafe(12)
         logf = open(os.path.join(self.dir, f"{time.strftime('%Y%m%d-%H%M%S')}-{sid}.log"), "ab", buffering=0)
         os.chmod(logf.name, 0o600)
-        logf.write(f"# {time.strftime('%Y-%m-%d %H:%M:%S')} {user} → {login}@{ip}:{port}\n".encode())
+        logf.write(f"# {time.strftime('%Y-%m-%d %H:%M:%S')} {user} → {login}@{ip}:{port}{' (구형 장비 호환)' if legacy else ''}\n".encode())
         sess = Session(sid, user, ip, login, port, proc, master, logf)
+        sess.legacy = bool(legacy)
         with self.lock:
             self.sessions[sid] = sess
         threading.Thread(target=self._pump, args=(sess,), daemon=True, name=f"term-{sid}").start()
         self._ensure_reaper()
         self.p.audit.record(user, "terminal.open", "host", ip, None,
-                            {"session": sid, "login": login, "port": port, "path": [x.get("label") or x.get("ip") or x["id"] for x in path]})
+                            {"session": sid, "login": login, "port": port, "legacy": bool(legacy), "path": [x.get("label") or x.get("ip") or x["id"] for x in path]})
         return sess
 
     def get(self, sid, user):

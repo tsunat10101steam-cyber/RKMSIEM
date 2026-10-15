@@ -1010,8 +1010,9 @@ def create_app(platform):
         b = body({"type": "object", "required": ["ip", "login"], "additionalProperties": False,
                   "properties": {"ip": {"type": "string", "maxLength": 64}, "login": {"type": "string", "maxLength": 32},
                                  "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-                                 "cols": {"type": "integer", "minimum": 20, "maximum": 500}, "rows": {"type": "integer", "minimum": 5, "maximum": 300}}})
-        sess = p.terminal.open(actor(), b["ip"], b["login"], b.get("port", 22), b.get("cols", 100), b.get("rows", 30))
+                                 "cols": {"type": "integer", "minimum": 20, "maximum": 500}, "rows": {"type": "integer", "minimum": 5, "maximum": 300},
+                                 "legacy": {"type": "boolean"}}})
+        sess = p.terminal.open(actor(), b["ip"], b["login"], b.get("port", 22), b.get("cols", 100), b.get("rows", 30), b.get("legacy", False))
         return jsonify(sess.info()), 201
 
     @app.get("/api/terminal/<sid>")

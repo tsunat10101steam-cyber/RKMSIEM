@@ -29,7 +29,7 @@ def test_wired_reachability():
 @pytest.fixture
 def ctx(tmp_path, config_dir):
     p = Platform(load_settings(config_dir, overrides={"database.path": str(tmp_path / "t.db")}))
-    p.terminal.argv = lambda ip, login, port: ["/bin/sh", "-c", f"echo READY {login}@{ip}:{port}; read x; echo got:$x; sleep 30"]
+    p.terminal.argv = lambda ip, login, port, legacy=False: ["/bin/sh", "-c", f"echo READY {login}@{ip}:{port}{' legacy' if legacy else ''}; read x; echo got:$x; sleep 30"]
     app = create_app(p)
     auth = app.extensions["rkmsiem_auth"]
     auth.create_user("boss", PW, "admin", "t")
@@ -105,3 +105,21 @@ def test_permission_added_to_existing_rbac(tmp_path, config_dir):
     p = Platform(load_settings(config_dir, overrides={"database.path": str(tmp_path / "t.db")}))
     assert "terminal:use" in p.config.get("rbac")["roles"]["admin"]["permissions"]
     assert "terminal:use" not in p.config.get("rbac")["roles"]["analyst"]["permissions"]
+
+
+def test_legacy_option(ctx, monkeypatch):
+    p, c, H = ctx
+    import shutil
+    from rkmsiem.terminal import TerminalManager
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/ssh")
+    plain, old = TerminalManager.argv(p.terminal, "10.0.0.20", "ops", 22), TerminalManager.argv(p.terminal, "10.0.0.20", "ops", 22, legacy=True)
+    assert not any("group1" in a for a in plain)
+    assert "KexAlgorithms=+diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1" in old
+    assert old[-5:] == ["-p", "22", "-l", "ops", "10.0.0.20"]                      # 대상은 항상 맨 끝
+    c.put("/api/config/topology", headers=H("boss"), json=LAYOUT)
+    r = c.post("/api/terminal", headers=H("boss"), json={"ip": "10.0.0.20", "login": "ops", "legacy": True})
+    assert r.status_code == 201 and r.get_json()["legacy"] is True
+    out, _ = _read_until(c, H("boss"), r.get_json()["id"], b"legacy")
+    assert b"READY ops@10.0.0.20:22 legacy" in out
+    import json
+    assert any(a["action"] == "terminal.open" and json.loads(a["detail"] or "{}").get("legacy") for a in p.audit.list(20))

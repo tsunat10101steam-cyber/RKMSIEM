@@ -46,20 +46,26 @@ function openTerminal(node, preset = {}) {
     <form class="tw-form"><p class="dim">SSH 로 <b>${esc(node.ip)}</b> 에 접속합니다. 비밀번호와 호스트 키 확인은 다음 화면의 터미널에서 직접 입력하세요.</p>
       <div class="st-row"><label>계정<input class="tw-login" required maxlength="32" pattern="[A-Za-z_][A-Za-z0-9_.\\-]{0,31}" value="${esc(preset.login || twLastLogin(node.ip))}" autocomplete="username"></label>
       <label>포트<select class="tw-port">${TW.ports.map(p => `<option ${p === (preset.port || 22) ? "selected" : ""}>${p}</option>`).join("")}</select></label></div>
+      <label class="tw-chk"><input type="checkbox" class="tw-legacy" ${(preset.legacy ?? twPref(node.ip, "legacy")) ? "checked" : ""}> 구형 장비 호환
+        <span class="faint">— 오래된 스위치·라우터처럼 옛 암호 방식만 아는 장비 (예: diffie-hellman-group1-sha1)</span></label>
       <div class="st-row"><button class="btn primary" type="submit">접속</button><span class="tw-err c-high"></span></div>
       <p class="faint">접속·종료는 감사 로그에, 화면 출력은 서버의 터미널 기록에 남습니다. 토폴로지에서 와이어를 끊으면 연결도 끊깁니다.</p></form>
     <div class="tw-body" hidden></div><div class="tw-foot dim" hidden></div>`;
   document.body.appendChild(w.el); TW.wins.push(w); twFront(w); twDrag(w);
   w.el.addEventListener("pointerdown", () => twFront(w));
   $$(".tw-b", w.el).forEach(b => b.onclick = () => b.dataset.a === "close" ? twClose(w) : twMax(w));
-  $(".tw-form", w.el).onsubmit = e => { e.preventDefault(); twConnect(w, $(".tw-login", w.el).value.trim(), +$(".tw-port", w.el).value); };
-  if (preset.login) twConnect(w, preset.login, preset.port || 22); else setTimeout(() => $(".tw-login", w.el).select(), 0);
+  $(".tw-form", w.el).onsubmit = e => { e.preventDefault(); twConnect(w, $(".tw-login", w.el).value.trim(), +$(".tw-port", w.el).value, $(".tw-legacy", w.el).checked); };
+  if (preset.login) twConnect(w, preset.login, preset.port || 22, preset.legacy ?? twPref(node.ip, "legacy")); else setTimeout(() => $(".tw-login", w.el).select(), 0);
   if (A) anime({ targets: w.el, opacity: [0, 1], translateY: [12, 0], duration: 260, easing: "easeOutCubic" });
   return w;
 }
 function twLastLogin(ip) { try { return localStorage.getItem("rk_ssh_" + ip) || ""; } catch (e) { return ""; } }
+function twPref(ip, k) { try { return localStorage.getItem(`rk_ssh_${k}_${ip}`) === "1"; } catch (e) { return false; } }
+function twSetPref(ip, k, on) { try { on ? localStorage.setItem(`rk_ssh_${k}_${ip}`, "1") : localStorage.removeItem(`rk_ssh_${k}_${ip}`); } catch (e) { /* 저장소 차단 */ } }
+// ssh 가 암호 방식 협상에 실패했다는 뜻 (상대 장비가 옛 방식만 앎) → 구형 장비 호환으로 다시 접속을 권한다
+const TW_NEGOTIATE = /Unable to negotiate|no matching (key exchange|host key type|cipher|MAC)/i;
 
-async function twConnect(w, login, port) {
+async function twConnect(w, login, port, legacy = false) {
   const err = $(".tw-err", w.el), btn = $(".tw-form button", w.el); err.textContent = ""; btn.disabled = true;
   try {
     await twLoadLib();
@@ -69,10 +75,11 @@ async function twConnect(w, login, port) {
       fontFamily: "'JetBrains Mono', 'Nanum Gothic Coding', monospace",
       theme: { background: v("--bg") || "#0a0d12", foreground: v("--text") || "#dbe2ea", cursor: v("--accent") || "#4ade80", selectionBackground: "#2a3644" } });
     w.fit = new window.FitAddon.FitAddon(); w.term.loadAddon(w.fit); w.term.open(body); w.fit.fit();
-    const r = await api("/api/terminal", { method: "POST", body: { ip: w.ip, login, port, cols: w.term.cols, rows: w.term.rows } });
-    w.id = r.id; w.login = login;
+    const r = await api("/api/terminal", { method: "POST", body: { ip: w.ip, login, port, legacy, cols: w.term.cols, rows: w.term.rows } });
+    w.id = r.id; w.login = login; w.port = port; w.legacy = legacy; w.tail = "";
     try { localStorage.setItem("rk_ssh_" + w.ip, login); } catch (e) { /* 저장소 차단 */ }
-    $(".tw-s", w.el).textContent = `${login}@${w.ip}${port !== 22 ? ":" + port : ""}`; w.el.classList.add("on");
+    twSetPref(w.ip, "legacy", legacy);
+    $(".tw-s", w.el).textContent = `${login}@${w.ip}${port !== 22 ? ":" + port : ""}${legacy ? " · 구형 호환" : ""}`; w.el.classList.add("on");
     w.term.onData(d => twSend(w, d));
     w.term.onResize(({ cols, rows }) => { clearTimeout(w.rt); w.rt = setTimeout(() => !w.dead && api(`/api/terminal/${w.id}/resize`, { method: "POST", body: { cols, rows } }).catch(() => {}), 150); });
     w.ro = new ResizeObserver(() => { try { w.fit.fit(); } catch (e) { /* 숨김 상태 */ } }); w.ro.observe(body);
@@ -94,7 +101,7 @@ async function twLoop(w) {
       const r = await api(`/api/terminal/${w.id}?since=${w.next}&wait=20`);
       fails = 0;
       if (r.truncated) w.term.write("\r\n\x1b[33m[이전 출력 일부 생략]\x1b[0m\r\n");
-      if (r.data) w.term.write(twB64(r.data));
+      if (r.data) { const u = twB64(r.data); w.term.write(u); w.tail = (w.tail + new TextDecoder().decode(u)).slice(-2000); }
       w.next = r.next;
       if (r.closed) return twEnded(w, r.reason || "연결 종료");
     } catch (e) {
@@ -108,8 +115,13 @@ function twEnded(w, why) {
   if (w.dead) return; w.dead = true; w.el.classList.remove("on"); w.el.classList.add("end");
   w.term?.write(`\r\n\x1b[90m── ${why} ──\x1b[0m\r\n`);
   const f = $(".tw-foot", w.el); f.hidden = false;
-  f.innerHTML = `${esc(why)} <button class="btn" data-a="again">다시 접속</button>`;
-  $("[data-a=again]", f).onclick = () => { const n = { ip: w.ip, label: w.label }, pre = { login: w.login }; twClose(w); openTerminal(n, pre); };
+  const nego = !w.legacy && TW_NEGOTIATE.test(w.tail || "");
+  f.innerHTML = `<span>${nego ? "이 장비는 옛 암호 방식만 지원합니다" : esc(why)}</span><span class="st-row">
+    ${nego ? `<button class="btn primary" data-a="legacy">구형 장비 호환으로 다시 접속</button>` : ""}<button class="btn" data-a="again">다시 접속</button></span>`;
+  const again = legacy => { const n = { ip: w.ip, label: w.label }, pre = { login: w.login, port: w.port, legacy }; twClose(w); openTerminal(n, pre); };
+  $("[data-a=again]", f).onclick = () => again(w.legacy);
+  const lg = $("[data-a=legacy]", f); if (lg) lg.onclick = () => { twSetPref(w.ip, "legacy", true); again(true); };
+  if (nego) w.term?.write(`\x1b[33m이 장비는 옛 암호 방식만 지원합니다 → 아래 '구형 장비 호환으로 다시 접속'\x1b[0m\r\n`);
 }
 function twClose(w) {
   if (w.id && !w.dead) api(`/api/terminal/${w.id}`, { method: "DELETE" }).catch(() => {});

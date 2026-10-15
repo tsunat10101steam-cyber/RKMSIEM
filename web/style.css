@@ -732,6 +732,8 @@ tbody tr { transform-origin: top; }
 .tw-form .st-row label:first-child { flex: 1; }
 .tw-form input, .tw-form select { font: 13px var(--mono); color: var(--text); background: var(--panel); border: 1px solid var(--line-2); border-radius: 4px; padding: 6px 8px; }
 .tw-form input:focus, .tw-form select:focus { outline: none; border-color: var(--accent); }
+.tw-form label.tw-chk { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; color: var(--text); cursor: pointer; }
+.tw-form label.tw-chk input { accent-color: var(--accent); }
 .tw-body { flex: 1; min-height: 0; padding: 6px 4px 4px 8px; background: var(--bg); }
 .tw-body .xterm { height: 100%; }
 .tw-foot { padding: 6px 10px; border-top: 1px solid var(--line); font: 12px var(--ko); display: flex; gap: 10px; align-items: center; justify-content: space-between; }
