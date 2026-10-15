@@ -51,32 +51,49 @@ async function renderTopology(el, live) {
   clearInterval(TP.timer);
   TP.timer = setInterval(async () => {                               // 상태만 주기적으로 (배치는 그대로)
     if (!el.isConnected) return clearInterval(TP.timer);
-    try { const ips = TP.layout.nodes.map(n => n.ip).filter(Boolean).slice(0, 400).join(",");
+    try { const ips = TP.layout.nodes.flatMap(tpIps).slice(0, 400).join(",");
       TP.status = (await api(`/api/topology?ips=${encodeURIComponent(ips)}`)).status || {}; $(".tp-upd", el).textContent = fmtT(Date.now() / 1000); tpDraw(); tpInsp(); } catch (e) { /* 다음에 */ }
   }, 10000);
 }
 
 // ---------------------------------------------------------------- 그리기
 function tpNode(id) { return TP.layout.nodes.find(n => n.id === id); }
-function tpHot(n) { const s = n && n.ip && TP.status[n.ip]; return s && (s.severity === "critical" || s.severity === "high"); }
+// 기기의 모든 IP: 대표 IP + 인터페이스 IP (라우터·방화벽·SIEM 처럼 여러 개인 기기)
+const tpIps = n => [...new Set([n?.ip, ...((n?.interfaces) || []).map(i => i.ip)].filter(Boolean))];
+const TP_RANK = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+function tpStat(n) {                                                 // 기기 상태 = 모든 IP 의 상태를 합친 것
+  const st = { open_alerts: 0, severity: null, titles: [], incident_id: null, blocked: false, events_24h: 0, last_seen: null };
+  for (const ip of tpIps(n)) { const s = TP.status[ip]; if (!s) continue;
+    st.open_alerts += s.open_alerts || 0; st.events_24h += s.events_24h || 0; st.blocked ||= !!s.blocked;
+    if (s.severity && (!st.severity || TP_RANK[s.severity] > TP_RANK[st.severity])) { st.severity = s.severity; st.incident_id = s.incident_id; }
+    for (const t of s.titles || []) if (!st.titles.includes(t) && st.titles.length < 3) st.titles.push(t);
+    if (s.last_seen && (!st.last_seen || s.last_seen > st.last_seen)) st.last_seen = s.last_seen; }
+  return st;
+}
+function tpHot(n) { const s = n && tpStat(n); return s && (s.severity === "critical" || s.severity === "high"); }
+// IPv4 대역 비교 (인터페이스 prefix, 없으면 /24 로 가정) — 와이어 양 끝 포트 자동 짝짓기용
+function tpV4(ip) { const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip || ""); return m ? ((+m[1] << 24) >>> 0) + (+m[2] << 16) + (+m[3] << 8) + +m[4] : null; }
+function tpSameNet(i, ip) { const a = tpV4(i.ip), b = tpV4(ip), p = i.prefix ?? 24; if (a == null || b == null || p > 32) return false;
+  const mask = p ? (0xffffffff << (32 - p)) >>> 0 : 0; return ((a & mask) >>> 0) === ((b & mask) >>> 0); }
+function tpPortFor(n, other) { return ((n.interfaces) || []).find(i => i.name && i.ip && tpIps(other).some(ip => tpSameNet(i, ip)))?.name; }
 function tpDraw(anim) {
   const el = TP.el, gl = $(".tp-links", el), gn = $(".tp-nodes", el), L = TP.layout;
   $(".tp-nn", el).textContent = L.nodes.length; $(".tp-ln", el).textContent = L.links.length;
   $(".tp-empty", el).style.display = L.nodes.length ? "none" : "";
   gl.innerHTML = L.links.map(l => { const a = tpNode(l.from), b = tpNode(l.to); if (!a || !b) return "";
-    const hot = tpHot(a) || tpHot(b), s = hot ? (TP.status[(tpHot(a) ? a : b).ip] || {}).severity : null;
+    const hot = tpHot(a) || tpHot(b), s = hot ? tpStat(tpHot(a) ? a : b).severity : null;
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
     return `<g class="tp-link ${TP.sel?.link === l.id ? "sel" : ""} ${hot ? "hot" : ""}" data-l="${esc(l.id)}">
       <line class="hit" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>
       <line class="wire" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" ${s ? `style="stroke:${TP_SEV[s]}"` : ""}/>
-      ${l.label ? `<text class="tp-ll" x="${mx}" y="${my - 6}">${esc(l.label)}</text>` : ""}</g>`; }).join("");
-  gn.innerHTML = L.nodes.map(n => { const st = (n.ip && TP.status[n.ip]) || {}, [lab, d] = TP_TYPES[n.type] || TP_TYPES.other;
+      ${l.label ? `<text class="tp-ll" x="${mx}" y="${my - 6}">${esc(l.label)}</text>` : ""}${tpPortLabel(a, b, l.from_if)}${tpPortLabel(b, a, l.to_if)}</g>`; }).join("");
+  gn.innerHTML = L.nodes.map(n => { const st = tpStat(n), ips = tpIps(n), [lab, d] = TP_TYPES[n.type] || TP_TYPES.other;
     const ring = st.severity ? TP_SEV[st.severity] : null;
     return `<g class="tp-node t-${n.type} ${TP.sel?.node === n.id ? "sel" : ""} ${tpHot(n) ? "hot" : ""}" data-n="${esc(n.id)}" transform="translate(${n.x},${n.y})">
       ${ring ? `<rect class="pulse" x="-34" y="-34" width="68" height="68" rx="18" style="stroke:${ring}"/>` : ""}
       <rect class="tile" x="-28" y="-28" width="56" height="56" rx="14" ${ring ? `style="stroke:${ring}"` : ""}/>
       <svg x="-14" y="-14" width="28" height="28" viewBox="0 0 24 24"><path class="ico" d="${d}"/></svg>
-      <text class="lab" y="46">${esc(n.label || lab)}</text>${n.ip ? `<text class="ip" y="61">${esc(n.ip)}</text>` : ""}
+      <text class="lab" y="46">${esc(n.label || lab)}</text>${ips.length ? `<text class="ip" y="61">${esc(ips[0])}${ips.length > 1 ? ` +${ips.length - 1}` : ""}</text>` : ""}
       ${st.open_alerts ? `<g class="badge" transform="translate(26,-26)"><circle r="10" style="fill:${ring || "var(--high)"}"/><text y="4">${st.open_alerts > 99 ? "99+" : st.open_alerts}</text></g>` : ""}
       ${st.blocked ? `<g class="blk" transform="translate(-26,-26)"><circle r="10"/><text y="4">⊘</text></g>` : ""}
       ${TP.editable ? `<circle class="port" cx="34" cy="0" r="6"><title>끌어서 와이어 연결</title></circle>` : ""}</g>`; }).join("");
@@ -99,8 +116,9 @@ function tpFit() {
 // ---------------------------------------------------------------- 편집
 function tpChange(redraw = true) { if (redraw) tpDraw(); tpInsp(); }
 function tpAddNode(n) {
-  if (n.ip) { const ex = TP.layout.nodes.find(x => x.ip === n.ip); if (ex) { TP.sel = { node: ex.id }; tpChange(); tpFlash(ex.id); toast(`${esc(n.ip)} 는 이미 배치돼 있습니다`); return ex; } }
-  const node = { id: tpId("n"), type: n.type || "other", label: n.label || "", x: Math.round(n.x / 12) * 12, y: Math.round(n.y / 12) * 12, ...(n.ip ? { ip: n.ip } : {}) };
+  if (n.ip) { const ex = TP.layout.nodes.find(x => tpIps(x).includes(n.ip)); if (ex) { TP.sel = { node: ex.id }; tpChange(); tpFlash(ex.id); toast(`${esc(n.ip)} 는 이미 배치돼 있습니다`); return ex; } }
+  const node = { id: tpId("n"), type: n.type || "other", label: n.label || "", x: Math.round(n.x / 12) * 12, y: Math.round(n.y / 12) * 12, ...(n.ip ? { ip: n.ip } : {}),
+    ...(n.interfaces?.length > 1 ? { interfaces: n.interfaces.map(i => ({ ...i })) } : {}) };
   TP.layout.nodes.push(node); TP.sel = { node: node.id }; tpChange(); tpFlash(node.id);
   return node;
 }
@@ -108,7 +126,9 @@ function tpFlash(id) { const g = $(`.tp-node[data-n="${CSS.escape(id)}"]`, TP.el
 function tpLink(a, b) {
   if (a === b) return;
   if (TP.layout.links.some(l => (l.from === a && l.to === b) || (l.from === b && l.to === a))) { toast("이미 이어져 있습니다"); return; }
-  const l = { id: tpId("l"), from: a, to: b }; TP.layout.links.push(l); TP.sel = { link: l.id }; tpChange();
+  const l = { id: tpId("l"), from: a, to: b }, na = tpNode(a), nb = tpNode(b), fa = tpPortFor(na, nb), fb = tpPortFor(nb, na);
+  if (fa) l.from_if = fa; if (fb) l.to_if = fb;                     // 같은 대역 인터페이스끼리 (예: SIEM 10.1.1.53 ↔ GATEWAY f0/1)
+  TP.layout.links.push(l); TP.sel = { link: l.id }; tpChange();
   const w = $(`.tp-link[data-l="${CSS.escape(l.id)}"] .wire`, TP.el);
   if (w && A) { const len = Math.hypot(w.x2.baseVal.value - w.x1.baseVal.value, w.y2.baseVal.value - w.y1.baseVal.value);
     anime({ targets: w, strokeDashoffset: [len, 0], strokeDasharray: [len, len], duration: 450, easing: "easeOutCubic", complete: () => { w.style.strokeDasharray = ""; } }); }
@@ -143,12 +163,12 @@ async function tpScan(quiet) {
 }
 const TP_SEEN = { self: "이 서버", gateway: "게이트웨이", neighbor: "같은 망", ids: "IDS", logs: "로그" };
 function tpDisc() {
-  const box = $(".tp-disc", TP.el), q = ($(".tp-q", TP.el)?.value || "").trim(), placed = new Set(TP.layout.nodes.map(n => n.ip));
+  const box = $(".tp-disc", TP.el), q = ($(".tp-q", TP.el)?.value || "").trim(), placed = new Set(TP.layout.nodes.flatMap(tpIps));
   const items = TP.disc.filter(c => !q || c.ip.includes(q) || (c.label || "").includes(q));
   box.innerHTML = (items.length ? `<button class="btn tp-all" data-t="placeall">감지된 기기 모두 놓기 (${items.filter(c => !placed.has(c.ip)).length})</button>` : "") +
     (items.slice(0, 120).map(c => { const s = c.status || {}, [lab, d] = TP_TYPES[c.suggest] || TP_TYPES.other;
       return `<div class="tp-di ${placed.has(c.ip) ? "placed" : ""}" draggable="${!placed.has(c.ip)}" data-ip="${esc(c.ip)}" title="${esc(c.seen_by.map(k => TP_SEEN[k]).join(" · "))}">
-        <svg viewBox="0 0 24 24"><path d="${d}"/></svg><div><b>${esc(c.ip)}</b>${c.label ? ` <span class="dim">${esc(c.label)}</span>` : ""}
+        <svg viewBox="0 0 24 24"><path d="${d}"/></svg><div><b>${esc(c.ip)}</b>${c.interfaces?.length > 1 ? ` <span class="faint">+${c.interfaces.length - 1}</span>` : ""}${c.label ? ` <span class="dim">${esc(c.label)}</span>` : ""}
         <small>${esc(c.seen_by.map(k => TP_SEEN[k]).join(" · "))}${c.events ? ` · 이벤트 ${fmt(c.events)}` : ""}${c.mac ? ` · ${esc(c.mac)}` : ""}</small></div>
         ${s.severity ? `<i class="dot" style="background:${TP_SEV[s.severity]}"></i>` : ""}${s.blocked ? `<i class="blkm">⊘</i>` : ""}${placed.has(c.ip) ? `<span class="faint">배치됨</span>` : ""}</div>`; }).join("")
       || `<div class="faint">감지된 기기가 없습니다</div>`);
@@ -158,49 +178,102 @@ function tpDisc() {
 }
 function tpPlaceDisc(list) {
   const base = TP.layout.nodes.length;
-  list.forEach((c, i) => tpAddNode({ ip: c.ip, label: c.label || "", type: c.suggest, x: (base + i) % 6 * 150 - 375, y: Math.floor((base + i) / 6) * 140 }));
+  list.forEach((c, i) => tpAddNode({ ip: c.ip, interfaces: c.interfaces, label: c.label || "", type: c.suggest, x: (base + i) % 6 * 150 - 375, y: Math.floor((base + i) / 6) * 140 }));
   if (list.length > 1) tpAuto(); tpDisc();
 }
 
 // ---------------------------------------------------------------- 오른쪽: 선택한 기기·와이어
 function tpInsp() {
   const box = $(".tp-insp", TP.el), s = TP.sel, dis = TP.editable ? "" : "disabled";
-  if (!s) { box.innerHTML = `<div class="faint" style="font:12.5px var(--ko)">기기나 와이어를 누르면 여기서 설정합니다.</div>
+  if (!s) { box.innerHTML = `<div class="faint" style="font:12.5px var(--ko)">기기나 와이어를 누르면 여기서 설정합니다.<br>감지된 IP 를 이미 놓인 기기 위에 떨어뜨리면 그 기기의 <b>인터페이스</b>로 들어갑니다.</div>
       <div class="tp-legend"><b>상태 표시</b>${Object.entries(TP_SEV).slice(0, 3).map(([k, c]) => `<span><i style="background:${c}"></i>${SEVK[k][1]} 경보</span>`).join("")}<span><i class="b">⊘</i>차단됨</span></div>`; return; }
   if (s.link) { const l = TP.layout.links.find(x => x.id === s.link); if (!l) { TP.sel = null; return tpInsp(); }
-    const a = tpNode(l.from), b = tpNode(l.to);
-    box.innerHTML = `<div class="tp-ih"><b>와이어</b><span class="dim">${esc(a?.label || a?.ip || "?")} ↔ ${esc(b?.label || b?.ip || "?")}</span></div>
-      <label>이름 <span class="faint">(예: Gi0/1, 업링크)</span><input data-l="label" value="${esc(l.label || "")}" ${dis}></label>
+    const a = tpNode(l.from), b = tpNode(l.to), nm = n => n?.label || tpIps(n)[0] || "?";
+    const ports = (n, cur) => `<option value="">(지정 안 함)</option>` + ((n?.interfaces) || []).filter(i => i.name)
+      .map(i => `<option value="${esc(i.name)}" ${i.name === cur ? "selected" : ""}>${esc(i.name)}${i.ip ? ` · ${esc(i.ip)}` : ""}</option>`).join("");
+    box.innerHTML = `<div class="tp-ih"><b>와이어</b><span class="dim">${esc(nm(a))} ↔ ${esc(nm(b))}</span></div>
+      <label>${esc(nm(a))} 쪽 포트<select data-l="from_if" ${dis}>${ports(a, l.from_if)}</select></label>
+      <label>${esc(nm(b))} 쪽 포트<select data-l="to_if" ${dis}>${ports(b, l.to_if)}</select></label>
+      ${(a?.interfaces?.length || b?.interfaces?.length) ? "" : `<div class="faint tp-hint">포트를 고르려면 기기에 인터페이스(이름·IP)를 넣으세요.</div>`}
+      <label>이름 <span class="faint">(예: 업링크)</span><input data-l="label" value="${esc(l.label || "")}" ${dis}></label>
       ${TP.editable ? `<button class="btn danger" data-t="del">와이어 삭제</button>` : ""}`;
   } else { const n = tpNode(s.node); if (!n) { TP.sel = null; return tpInsp(); }
-    const st = (n.ip && TP.status[n.ip]) || {}, links = TP.layout.links.filter(l => l.from === n.id || l.to === n.id).length;
+    const st = tpStat(n), ips = tpIps(n), links = TP.layout.links.filter(l => l.from === n.id || l.to === n.id).length;
+    const ifs = n.interfaces || [];
     box.innerHTML = `<div class="tp-ih"><svg viewBox="0 0 24 24"><path d="${(TP_TYPES[n.type] || TP_TYPES.other)[1]}"/></svg><b>${esc(n.label || TP_TYPES[n.type]?.[0] || "기기")}</b></div>
       <label>이름<input data-f="label" value="${esc(n.label || "")}" ${dis}></label>
       <label>종류<select data-f="type" ${dis}>${Object.entries(TP_TYPES).map(([k, [l]]) => `<option value="${k}" ${k === n.type ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-      <label>IP <span class="faint">(상태 연동)</span><input data-f="ip" value="${esc(n.ip || "")}" ${dis}></label>
+      <label>대표 IP <span class="faint">(상태·SSH 기본 — 비우면 첫 인터페이스)</span><input data-f="ip" value="${esc(n.ip || "")}" ${dis}></label>
+      <div class="tp-ifs"><div class="tp-ifh"><span>인터페이스 <span class="faint">${ifs.length ? `${ifs.length}개` : "(라우터·방화벽처럼 IP 가 여럿이면)"}</span></span>
+        ${TP.editable ? `<button class="btn" data-t="ifadd" title="인터페이스 추가">＋ 추가</button>` : ""}</div>
+        ${ifs.map((i, k) => `<div class="tp-if" data-k="${k}"><input data-if="name" value="${esc(i.name || "")}" placeholder="f0/0" ${dis} aria-label="인터페이스 이름">
+          <input data-if="ip" value="${esc(i.ip ? i.ip + (i.prefix != null ? "/" + i.prefix : "") : "")}" placeholder="10.1.1.254/24" ${dis} aria-label="IP/대역">
+          ${TP.editable ? `<button class="tp-ifx" data-t="ifdel" title="삭제">✕</button>` : ""}</div>`).join("")}</div>
       <label>메모<input data-f="note" value="${esc(n.note || "")}" ${dis}></label>
-      <div class="tp-st">${n.ip ? `${st.severity ? `열린 경보 <b>${st.open_alerts}</b>건 · 최고 ${sev(st.severity)}<br><span class="dim">${(st.titles || []).map(esc).join(" · ")}</span>` : `<span class="acc">열린 경보 없음</span>`}
-        ${st.blocked ? `<br><b class="c-critical">⊘ 방화벽에서 차단됨</b>` : ""}${st.events_24h ? `<br><span class="dim">최근 24시간 이벤트 ${fmt(st.events_24h)}건 · 마지막 ${fmtT(st.last_seen)}</span>` : ""}` : `<span class="faint">IP 를 넣으면 경보·차단 상태가 표시됩니다</span>`}</div>
+      <div class="tp-st">${ips.length ? `${st.severity ? `열린 경보 <b>${st.open_alerts}</b>건 · 최고 ${sev(st.severity)}<br><span class="dim">${(st.titles || []).map(esc).join(" · ")}</span>` : `<span class="acc">열린 경보 없음</span>`}
+        ${st.blocked ? `<br><b class="c-critical">⊘ 방화벽에서 차단됨</b>` : ""}${st.events_24h ? `<br><span class="dim">최근 24시간 이벤트 ${fmt(st.events_24h)}건 · 마지막 ${fmtT(st.last_seen)}</span>` : ""}
+        ${ips.length > 1 ? `<br><span class="faint">IP ${ips.length}개 합산: ${ips.map(esc).join(", ")}</span>` : ""}` : `<span class="faint">IP 를 넣으면 경보·차단 상태가 표시됩니다</span>`}</div>
       ${tpTermBtn(n)}
-      <div class="st-row" style="flex-wrap:wrap">${n.ip ? `<button class="btn" data-cmd="search ip=${esc(n.ip)}">이벤트 검색</button>` : ""}${st.incident_id ? `<button class="btn" data-cmd="incident ${st.incident_id}">사건 #${st.incident_id}</button>` : ""}
+      <div class="st-row" style="flex-wrap:wrap">${ips.length ? `<button class="btn" data-cmd="search ip=${esc(ips[0])}">이벤트 검색</button>` : ""}${st.incident_id ? `<button class="btn" data-cmd="incident ${st.incident_id}">사건 #${st.incident_id}</button>` : ""}
         ${TP.editable ? `<button class="btn danger" data-t="del">기기 삭제${links ? ` (와이어 ${links}개 포함)` : ""}</button>` : ""}</div>`;
   }
-  const tb = $('[data-t="term"]', box); if (tb) tb.onclick = () => openTerminal({ ip: tb.dataset.ip, label: tb.dataset.label });
+  const tb = $('[data-t="term"]', box); if (tb) tb.onclick = () => openTerminal({ ip: $(".tp-term-ip", box)?.value || tb.dataset.ip, label: tb.dataset.label });
   if (!TP.editable) return;
   $$("[data-f], [data-l]", box).forEach(i => i.addEventListener(i.tagName === "SELECT" ? "change" : "input", () => {
-    if (i.dataset.l) { const l = TP.layout.links.find(x => x.id === TP.sel.link); i.value ? l.label = i.value : delete l.label; }
+    if (i.dataset.l) { const l = TP.layout.links.find(x => x.id === TP.sel.link), k = i.dataset.l; i.value ? l[k] = i.value : delete l[k]; }
     else { const n = tpNode(TP.sel.node), k = i.dataset.f, v = i.value.trim(); v ? n[k] = v : (k === "type" ? null : delete n[k]); if (k === "type") n.type = v; }
     tpDraw();
   }));
+  // 인터페이스 편집: 이름을 바꾸면 그 포트를 쓰는 와이어도 따라 바뀜, 'IP/대역' 형식
+  $$(".tp-if", box).forEach(row => $$("[data-if]", row).forEach(inp => inp.addEventListener("input", () => {
+    const n = tpNode(TP.sel.node), i = n.interfaces[+row.dataset.k], v = inp.value.trim();
+    if (inp.dataset.if === "name") {
+      const old = i.name; v ? i.name = v : delete i.name;
+      TP.layout.links.forEach(l => { if (l.from === n.id && l.from_if === old) v ? l.from_if = v : delete l.from_if;
+        if (l.to === n.id && l.to_if === old) v ? l.to_if = v : delete l.to_if; });
+    } else { const [ip, pf] = v.split("/"); ip ? i.ip = ip.trim() : delete i.ip; /^\d{1,3}$/.test((pf || "").trim()) ? i.prefix = +pf : delete i.prefix; }
+    tpDraw();
+  })));
+  const add = $('[data-t="ifadd"]', box);
+  if (add) add.onclick = () => { const n = tpNode(TP.sel.node); (n.interfaces ||= []).push({ name: "" });
+    if (n.interfaces.length === 1 && n.ip) n.interfaces[0].ip = n.ip;               // 첫 인터페이스는 대표 IP 로 시작
+    tpInsp(); $$(".tp-if:last-child [data-if=name]", box)[0]?.focus(); };
+  $$('[data-t="ifdel"]', box).forEach(b => b.onclick = () => { const n = tpNode(TP.sel.node), k = +b.closest(".tp-if").dataset.k, [gone] = n.interfaces.splice(k, 1);
+    if (gone?.name) TP.layout.links.forEach(l => { if (l.from === n.id && l.from_if === gone.name) delete l.from_if; if (l.to === n.id && l.to_if === gone.name) delete l.to_if; });
+    if (!n.interfaces.length) delete n.interfaces; tpDraw(); tpInsp(); });
   const del = $('[data-t="del"]', box); if (del) del.onclick = tpDelete;
+}
+// 와이어 끝의 포트 이름 (GNS3 처럼 기기 가까이)
+function tpPortLabel(n, o, name) {
+  if (!name) return "";
+  // 기기 아래쪽엔 이름·IP 글자가 있으니 그만큼 더 떨어뜨리고, 선에서 옆으로 살짝 비켜 겹치지 않게
+  const dx = o.x - n.x, dy = o.y - n.y, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d;
+  const r = Math.min(d * .45, uy > .5 ? 84 : 48), px = -uy * 12, py = ux * 12;
+  return `<text class="tp-pl" x="${(n.x + ux * r + px).toFixed(1)}" y="${(n.y + uy * r + py + 4).toFixed(1)}">${esc(name)}</text>`;
+}
+// 감지된 IP 를 놓인 기기 위에 떨어뜨림 → 그 기기의 인터페이스로
+function tpAddIf(id, ip) {
+  const n = tpNode(id), other = TP.layout.nodes.find(x => x.id !== id && tpIps(x).includes(ip));
+  if (tpIps(n).includes(ip)) return toast(`${esc(ip)} 는 이미 이 기기에 있습니다`);
+  if (other) return toast(`<span class="err">${esc(ip)} 는 이미 ${esc(other.label || other.id)} 에 있습니다</span>`, "high");
+  const ifs = (n.interfaces ||= []);
+  if (!ifs.length && n.ip) ifs.push({ name: "", ip: n.ip });
+  ifs.push({ name: "", ip });                                       // 대표 IP 가 비어 있으면 첫 인터페이스가 대표 (tpIps)
+  TP.sel = { node: id }; tpChange(); tpFlash(id);
+  toast(`${esc(ip)} → ${esc(n.label || "기기")} 의 인터페이스로 추가 — 오른쪽에서 이름(예: f0/1)을 넣으세요`);
 }
 
 // 웹 터미널 버튼: 저장된 배치에서 SIEM 과 와이어로 이어진 기기만 (최종 판단은 백엔드)
 function tpTermBtn(n) {
-  if (!n.ip || n.type === "siem" || !can("terminal:use")) return "";
-  const ok = twWired(JSON.parse(TP.saved), n.ip), unsaved = !ok && twWired(TP.layout, n.ip);
-  return `<div class="tp-term"><button class="btn ${ok ? "primary" : ""}" data-t="term" data-ip="${esc(n.ip)}" data-label="${esc(n.label || "")}" ${ok ? "" : "disabled"}>▸_ 터미널 (SSH)</button>
-    <span class="faint">${ok ? "SIEM 과 와이어로 연결됨" : unsaved ? "와이어 연결을 저장해야 접속할 수 있습니다" : "SIEM 과 와이어로 연결해야 접속할 수 있습니다"}</span></div>`;
+  // SIEM 과 같은 대역인 인터페이스 IP 를 먼저 (SIEM 에서 실제로 닿는 쪽 — 예: 라우터 f0/1)
+  const siemIps = TP.layout.nodes.filter(x => x.type === "siem").flatMap(tpIps);
+  const near = ip => ((n.interfaces || []).find(i => i.ip === ip) || { ip, prefix: 24 });
+  const ips = tpIps(n).sort((a, b) => siemIps.some(s => tpSameNet(near(b), s)) - siemIps.some(s => tpSameNet(near(a), s)));
+  if (!ips.length || n.type === "siem" || !can("terminal:use")) return "";
+  const ok = twWired(JSON.parse(TP.saved), ips[0]), unsaved = !ok && twWired(TP.layout, ips[0]);
+  return `<div class="tp-term"><div class="st-row"><button class="btn ${ok ? "primary" : ""}" data-t="term" data-ip="${esc(ips[0])}" data-label="${esc(n.label || "")}" ${ok ? "" : "disabled"}>▸_ 터미널 (SSH)</button>
+    ${ips.length > 1 ? `<select class="tp-term-ip" aria-label="접속할 IP" ${ok ? "" : "disabled"}>${ips.map(ip => `<option>${esc(ip)}</option>`).join("")}</select>` : ""}</div>
+    <span class="faint">${ok ? "SIEM 과 와이어로 연결됨" + (ips.length > 1 ? " · 접속할 IP 선택 (SIEM 에서 닿는 쪽)" : "") : unsaved ? "와이어 연결을 저장해야 접속할 수 있습니다" : "SIEM 과 와이어로 연결해야 접속할 수 있습니다"}</span></div>`;
 }
 
 // ---------------------------------------------------------------- 마우스·키보드
@@ -211,11 +284,15 @@ function tpBind() {
   $(".tp-q", el)?.addEventListener("input", tpDisc);
   // 팔레트·감지 목록 → 캔버스
   $$(".tp-pi", el).forEach(p => p.addEventListener("dragstart", e => { e.dataTransfer.setData("application/x-rktopo", JSON.stringify({ type: p.dataset.type })); e.dataTransfer.effectAllowed = "copy"; }));
-  svg.addEventListener("dragover", e => { if (TP.editable && e.dataTransfer.types.includes("application/x-rktopo")) { e.preventDefault(); svg.classList.add("over"); } });
-  svg.addEventListener("dragleave", () => svg.classList.remove("over"));
+  const dropOn = e => document.elementFromPoint(e.clientX, e.clientY)?.closest(".tp-node");
+  svg.addEventListener("dragover", e => { if (TP.editable && e.dataTransfer.types.includes("application/x-rktopo")) { e.preventDefault(); svg.classList.add("over");
+    const on = dropOn(e); $$(".tp-node.target", el).forEach(g => g !== on && g.classList.remove("target")); on?.classList.add("target"); } });
+  svg.addEventListener("dragleave", () => { svg.classList.remove("over"); $$(".tp-node.target", el).forEach(g => g.classList.remove("target")); });
   svg.addEventListener("drop", e => { svg.classList.remove("over"); const raw = e.dataTransfer.getData("application/x-rktopo"); if (!raw) return; e.preventDefault();
-    const d = JSON.parse(raw), w = tpToWorld(e);
-    if (d.ip) { const c = TP.disc.find(x => x.ip === d.ip) || { ip: d.ip }; tpAddNode({ ip: c.ip, label: c.label || "", type: c.suggest || "pc", x: w.x, y: w.y }); tpDisc(); }
+    const d = JSON.parse(raw), w = tpToWorld(e), on = dropOn(e);
+    $$(".tp-node.target", el).forEach(g => g.classList.remove("target"));
+    if (d.ip && on) { tpAddIf(on.dataset.n, d.ip); tpDisc(); return; }       // 기기 위 → 인터페이스
+    if (d.ip) { const c = TP.disc.find(x => x.ip === d.ip) || { ip: d.ip }; tpAddNode({ ip: c.ip, interfaces: c.interfaces, label: c.label || "", type: c.suggest || "pc", x: w.x, y: w.y }); tpDisc(); }
     else tpAddNode({ type: d.type, x: w.x, y: w.y }); });
   // 끌기: 기기 이동 · 와이어 · 화면 이동
   let drag = null;
@@ -230,8 +307,8 @@ function tpBind() {
     drag = { kind: "pan", x: e.clientX, y: e.clientY, vx: TP.view.x, vy: TP.view.y }; svg.setPointerCapture(e.pointerId);
   });
   svg.addEventListener("pointermove", e => {
-    if (!drag) { const n = e.target.closest(".tp-node"); if (n) { const node = tpNode(n.dataset.n), st = node?.ip && TP.status[node.ip];
-        showTip(e, `<b>${esc(node.label || TP_TYPES[node.type]?.[0])}</b>${node.ip ? ` ${esc(node.ip)}` : ""}${st?.severity ? `<br>${sev(st.severity)} 열린 경보 ${st.open_alerts}건` : ""}${st?.blocked ? "<br>⊘ 차단됨" : ""}`); } else hideTip(); return; }
+    if (!drag) { const n = e.target.closest(".tp-node"); if (n) { const node = tpNode(n.dataset.n), st = tpStat(node);
+        showTip(e, `<b>${esc(node.label || TP_TYPES[node.type]?.[0])}</b>${(node.interfaces || []).length ? node.interfaces.map(i => `<br>${esc(i.name || "-")} ${esc(i.ip || "")}${i.prefix != null ? "/" + i.prefix : ""}`).join("") : tpIps(node).length ? ` ${esc(tpIps(node)[0])}` : ""}${st?.severity ? `<br>${sev(st.severity)} 열린 경보 ${st.open_alerts}건` : ""}${st?.blocked ? "<br>⊘ 차단됨" : ""}`); } else hideTip(); return; }
     const w = tpToWorld(e);
     if (drag.kind === "pan") { TP.view.x = drag.vx + e.clientX - drag.x; TP.view.y = drag.vy + e.clientY - drag.y; tpApplyView(); }
     if (drag.kind === "node" && TP.editable) { drag.n.x = Math.round((w.x - drag.dx) / 12) * 12; drag.n.y = Math.round((w.y - drag.dy) / 12) * 12; drag.moved = true; tpDraw(); }

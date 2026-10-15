@@ -28,7 +28,7 @@ function twWired(layout, ip) {
   for (const l of layout?.links || []) if (adj.has(l.from) && adj.has(l.to)) { adj.get(l.from).push(l.to); adj.get(l.to).push(l.from); }
   const seen = new Set([...nodes.values()].filter(n => n.type === "siem").map(n => n.id)), q = [...seen];
   while (q.length) { const cur = q.shift(), n = nodes.get(cur);
-    if (n.ip === ip && n.type !== "siem") return true;
+    if ([n.ip, ...(n.interfaces || []).map(i => i.ip)].includes(ip) && n.type !== "siem") return true;
     for (const x of adj.get(cur)) if (!seen.has(x)) { seen.add(x); q.push(x); } }
   return false;
 }
@@ -146,11 +146,11 @@ async function terminalCommand(arg) {
   const m = (arg || "").trim().match(/^(?:([^@\s]+)@)?(\S+)(?:\s+(\d+))?$/);
   if (!m) {
     return `<div class="msg"><b>접속할 수 있는 기기</b> <span class="dim">(토폴로지에서 SIEM 과 와이어로 이어진 기기)</span>${r.targets.length ? r.targets.map(t =>
-      `<br><span class="link" data-cmd="ssh ${esc(t.ip)}">${esc(t.ip)}</span> ${esc(t.label)} <span class="dim">· ${esc(t.path.join(" → "))}</span>`).join("")
+      `<br>${(t.ips || [t.ip]).map(ip => `<span class="link" data-cmd="ssh ${esc(ip)}">${esc(ip)}</span>`).join(" ")} ${esc(t.label)} <span class="dim">· ${esc(t.path.join(" → "))}</span>`).join("")
       : `<br><span class="c-high">없음 — dashboard topology 에서 기기를 SIEM 과 와이어로 잇고 저장하세요</span>`}
       <br><span class="dim">사용법: ssh 계정@IP [포트]</span></div>`;
   }
-  const t = r.targets.find(x => x.ip === m[2]);
+  const t0 = r.targets.find(x => (x.ips || [x.ip]).includes(m[2])), t = t0 && { ...t0, ip: m[2] };
   if (!t) return `<div class="msg c-high">${esc(m[2])} 는 토폴로지에서 SIEM 과 와이어로 연결돼 있지 않습니다 — <span class="link" data-cmd="dashboard topology">dashboard topology</span></div>`;
   openTerminal(t, m[1] ? { login: m[1], port: +m[3] || 22 } : {});
   return `<div class="msg acc">터미널 창을 열었습니다 → ${esc(t.label || t.ip)} (${esc(t.path.join(" → "))})</div>`;

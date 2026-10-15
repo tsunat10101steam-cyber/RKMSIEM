@@ -245,11 +245,16 @@ TOPOLOGY = {
             "properties": {"id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,40}$"}, "label": {"type": "string", "maxLength": 64},
                            "type": {"enum": ["siem", "server", "router", "switch", "firewall", "ids", "pc", "attacker", "cloud", "other"]},
                            "ip": {"type": "string", "maxLength": 45}, "note": {"type": "string", "maxLength": 200},
+                           "interfaces": {"type": "array", "maxItems": 64, "items": {          # 라우터·방화벽·SIEM 처럼 IP 가 여러 개인 기기
+                               "type": "object", "additionalProperties": False,
+                               "properties": {"name": {"type": "string", "maxLength": 32}, "ip": {"type": "string", "maxLength": 45},
+                                              "prefix": {"type": "integer", "minimum": 0, "maximum": 128}}}},
                            "x": {"type": "number"}, "y": {"type": "number"}}}},
         "links": {"type": "array", "maxItems": 2000, "items": {
             "type": "object", "required": ["id", "from", "to"], "additionalProperties": False,
             "properties": {"id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,40}$"}, "from": {"type": "string"}, "to": {"type": "string"},
-                           "label": {"type": "string", "maxLength": 40}}}},
+                           "label": {"type": "string", "maxLength": 40},
+                           "from_if": {"type": "string", "maxLength": 32}, "to_if": {"type": "string", "maxLength": 32}}}},
     },
 }
 

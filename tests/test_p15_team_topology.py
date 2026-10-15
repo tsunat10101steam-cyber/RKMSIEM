@@ -76,3 +76,46 @@ def test_topology_layout_status_and_discover(ctx):
     k = next(x for x in d if x["ip"] == "45.33.32.9")
     assert "logs" in k["seen_by"] and k["suggest"] == "attacker" and k["events"] == 11
     assert c.get("/api/topology/discover", headers=H(ana)).status_code == 403
+
+
+def test_topology_interfaces(ctx, monkeypatch):
+    """한 기기에 IP 여러 개(라우터 f0/0·f0/1): 검증 · 상태 · 웹 터미널 경로 · 와이어 포트."""
+    from rkmsiem import topology
+    from rkmsiem.terminal import targets, wired
+    p, c, login, _ = ctx
+    boss = login("boss")
+    gw = {"id": "gw", "type": "router", "label": "GATEWAY", "ip": "192.168.100.133", "x": 0, "y": 0,
+          "interfaces": [{"name": "f0/0", "ip": "192.168.100.133", "prefix": 24}, {"name": "f0/1", "ip": "10.1.1.254", "prefix": 24}]}
+    siem = {"id": "siem", "type": "siem", "label": "SIEM", "ip": "10.1.1.53", "x": 0, "y": 100}
+    layout = {"nodes": [siem, gw], "links": [{"id": "l1", "from": "siem", "to": "gw", "to_if": "f0/1"}]}
+    assert c.put("/api/config/topology", headers=H(boss), json=layout).status_code == 200
+    # 어느 인터페이스 IP 로도 같은 기기 → 웹 터미널 대상
+    assert [n["id"] for n in wired(layout, "10.1.1.254")] == ["siem", "gw"]
+    assert [n["id"] for n in wired(layout, "192.168.100.133")] == ["siem", "gw"]
+    t = targets(layout)[0]
+    assert t["ips"] == ["192.168.100.133", "10.1.1.254"]
+    # 상태 조회에 모든 IP 포함
+    assert {"192.168.100.133", "10.1.1.254"} <= topology.layout_ips(layout)
+    # 잘못된 것들
+    bad = lambda **kw: c.put("/api/config/topology", headers=H(boss), json=dict(layout, **kw))   # noqa: E731
+    r = bad(links=[{"id": "l1", "from": "siem", "to": "gw", "to_if": "f9/9"}])
+    assert r.status_code == 400 and "f9/9" in str(r.get_json())
+    dup = dict(gw, interfaces=gw["interfaces"] + [{"name": "f0/1", "ip": "10.9.9.9"}])
+    assert bad(nodes=[siem, dup]).status_code == 400
+    other = {"id": "pc", "type": "pc", "ip": "10.1.1.254", "x": 1, "y": 1}
+    r = bad(nodes=[siem, gw, other])
+    assert r.status_code == 400 and "인터페이스로 합치세요" in str(r.get_json())
+    # 같은 두 기기 사이 두 번째 와이어는 포트를 지정하면 허용
+    two = [{"id": "l1", "from": "siem", "to": "gw", "to_if": "f0/1"}, {"id": "l2", "from": "siem", "to": "gw", "to_if": "f0/0"}]
+    assert bad(links=two).status_code == 200
+
+
+def test_discover_merges_own_nics(ctx, monkeypatch):
+    from rkmsiem import topology
+    p, *_ = ctx
+    monkeypatch.setattr(topology, "local_view", lambda: ({"192.168.100.128": {"iface": "ens33", "prefix": 24},
+                                                          "10.1.1.53": {"iface": "ens37", "prefix": 24}}, {"192.168.100.2"}, {}))
+    items = topology.discover(p)
+    selfs = [x for x in items if "self" in x["seen_by"]]
+    assert len(selfs) == 1 and [i["ip"] for i in selfs[0]["interfaces"]] == ["192.168.100.128", "10.1.1.53"]
+    assert not any(x["ip"] == "10.1.1.53" for x in items if x is not selfs[0])

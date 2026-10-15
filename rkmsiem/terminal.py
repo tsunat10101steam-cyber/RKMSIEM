@@ -23,6 +23,8 @@ import threading
 import time
 from collections import deque
 
+from .topology import node_ips
+
 log = logging.getLogger("rkmsiem.terminal")
 LOGIN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,31}$")
 # 구형 장비(오래된 스위치·라우터 펌웨어) 호환: 기본으로 꺼진 옛 암호 방식을 '목록 끝에 추가' 만 한다.
@@ -75,7 +77,7 @@ def wired(layout, ip):
     while todo:
         cur = todo.popleft()
         n = nodes[cur]
-        if n.get("ip") == ip and n.get("type") != "siem":
+        if ip in node_ips(n) and n.get("type") != "siem":
             path = []
             while cur is not None:
                 path.append(nodes[cur])
@@ -89,13 +91,14 @@ def wired(layout, ip):
 
 
 def targets(layout):
-    """접속할 수 있는 기기 (SIEM 과 와이어로 이어진, IP 가 있는 기기)."""
+    """접속할 수 있는 기기 (SIEM 과 와이어로 이어진, IP 가 있는 기기). ip = 대표 IP, ips = 모든 인터페이스 IP."""
     out = []
     for n in (layout or {}).get("nodes", []):
-        if n.get("ip") and n.get("type") != "siem":
-            path = wired(layout, n["ip"])
+        ips = node_ips(n)
+        if ips and n.get("type") != "siem":
+            path = wired(layout, ips[0])
             if path:
-                out.append({"id": n["id"], "ip": n["ip"], "label": n.get("label") or "", "type": n.get("type"),
+                out.append({"id": n["id"], "ip": ips[0], "ips": ips, "label": n.get("label") or "", "type": n.get("type"),
                             "hops": len(path) - 1, "path": [x.get("label") or x.get("ip") or x["id"] for x in path]})
     return out
 

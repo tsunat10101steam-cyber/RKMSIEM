@@ -744,3 +744,16 @@ tbody tr { transform-origin: top; }
 .mfa-qr { width: 196px; flex: none; background: #fff; border-radius: 8px; padding: 4px; }
 .mfa-qr svg { display: block; width: 100%; height: auto; }
 .mfa-key { font: 600 14px var(--mono); letter-spacing: .06em; color: var(--accent); background: var(--panel-2); padding: 2px 8px; border-radius: 4px; user-select: all; }
+
+/* 토폴로지 인터페이스 (기기당 IP 여러 개) */
+.tp-pl { font: 10.5px var(--mono); fill: var(--accent-2); text-anchor: middle; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; pointer-events: none; }
+.tp-ifs { margin: 0 0 10px; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.tp-ifh { display: flex; justify-content: space-between; align-items: center; font: 12px var(--ko); color: var(--dim); margin-bottom: 4px; }
+.tp-ifh .btn { padding: 2px 8px; font-size: 11.5px; }
+.tp-if { display: grid; grid-template-columns: 64px 1fr 22px; gap: 4px; margin-top: 4px; }
+.tp-if input { width: 100%; min-width: 0; font: 12.5px var(--mono); color: var(--text); background: var(--bg); border: 1px solid var(--line-2); border-radius: 4px; padding: 4px 6px; }
+.tp-ifx { background: none; border: 0; color: var(--faint); cursor: pointer; font-size: 13px; }
+.tp-ifx:hover { color: var(--critical); }
+.tp-hint { font: 12px var(--ko); margin: -2px 0 8px; }
+.tp-term .st-row select { max-width: 52%; font: 12.5px var(--mono); color: var(--text); background: var(--bg); border: 1px solid var(--line-2); border-radius: 4px; padding: 5px 6px; }
+.tp-term .st-row .btn { flex: 1; }
