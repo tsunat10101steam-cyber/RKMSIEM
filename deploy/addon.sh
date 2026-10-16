@@ -44,6 +44,8 @@ install)
 	echo "==> $NAME 전용 API 토큰 (권한: $SCOPES)"
 	# shellcheck disable=SC2086
 	TOKEN="$(rk_cli addon-token create "$AID" $SCOPES)"
+	chmod o+x /etc/rkmsiem                       # 추가 기능 서비스 계정이 자기 폴더까지 들어갈 수 있게 (목록은 못 봄)
+	install -d -m 0755 "$STATE"
 	install -d -m 0700 "$STATE/$AID"
 	umask 077
 	printf 'RKMSIEM_URL=http://127.0.0.1:8088\nRKMSIEM_TOKEN=%s\nRKMSIEM_ADDON=%s\n' "$TOKEN" "$AID" > "$STATE/$AID/addon.env"

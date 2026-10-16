@@ -98,7 +98,8 @@ find "$APP/rkmsiem" "$APP/staffdir" -name '__pycache__' -prune -exec rm -rf {} +
 chown -R root:root "$APP"
 
 step "설정 → $ETC (기존 설정은 보존)"
-install -d -m 0750 -o root -g rkmsiem "$ETC" "$ETC/config"
+install -d -m 0751 -o root -g rkmsiem "$ETC"          # o+x: 추가 기능 계정이 자기 폴더(addons/<id>)까지만 들어감 — 목록은 못 봄, 안의 파일은 각자 권한
+install -d -m 0750 -o root -g rkmsiem "$ETC/config"
 if [ ! -f "$ETC/config/settings.yaml" ]; then
 	cp -r "$SRC/config/." "$ETC/config/"
 	cp "$SRC/deploy/config/"*.yaml "$ETC/config/"              # 운영용 덮어쓰기 (실제 로그·실제 인텔·샘플 없음)

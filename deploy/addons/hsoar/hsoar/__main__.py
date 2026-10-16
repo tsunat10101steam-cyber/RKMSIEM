@@ -35,13 +35,18 @@ def read_env(path):
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
                     out[k.strip()] = v.strip().strip('"').strip("'")
-    except OSError:
+    except FileNotFoundError:
         pass
+    except OSError as e:                                    # 권한 문제는 '빠진 설정'으로 숨기지 않고 그대로 알림
+        log.error("설정 파일을 읽을 수 없습니다: %s — %s (서비스 계정 rkmsiem-hsoar 의 권한 · /etc/rkmsiem 은 0751 이어야 함)", path, e)
+        out["_unreadable"] = f"{path}: {e.strerror}"
     return out
 
 
 def config():
-    c = dict(read_env(ADDON_ENV), **read_env(os.path.join(ADDON_DIR, "hsoar.env")))
+    a, h = read_env(ADDON_ENV), read_env(os.path.join(ADDON_DIR, "hsoar.env"))
+    c = dict(a, **h)
+    c["_unreadable"] = [x.get("_unreadable") for x in (a, h) if x.get("_unreadable")]
     c["ALLOWED"] = [u.strip() for u in c.get("ALLOWED_USERS", "").split(",") if u.strip()]
     missing = [k for k in ("RKMSIEM_URL", "RKMSIEM_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_CHANNEL") if not c.get(k)]
     return c, missing
@@ -62,6 +67,10 @@ def check():
     c, missing = config()
     ok = True
     print(f"HSOAR v{VERSION} · 설정 {ADDON_DIR}")
+    for u in c["_unreadable"]:
+        print(f"✘ 읽을 수 없음: {u} — sudo chmod 0751 /etc/rkmsiem 후 sudo systemctl restart rkmsiem-hsoar")
+    if c["_unreadable"]:
+        return 1
     if missing:
         print(f"✘ 빠진 설정: {', '.join(missing)} — sudo rkmsiem-setup → 추가 기능 → HSOAR → 설정")
         return 1
