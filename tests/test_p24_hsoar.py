@@ -241,3 +241,71 @@ def test_slack_transport_routes_payloads(monkeypatch):
     assert acks == ["e1", "e2", "e3"]
     assert ("click", ("U1", "boss", '{"k":"dismiss"}', "C1", "9.9")) in calls
     assert {s["text"]: s["response_type"] for s in sent} == {"ok:pause": "in_channel", "ok:status": "ephemeral"}     # 조치 명령은 채널에 보임
+
+
+def test_check_and_slack_errors(tmp_path, monkeypatch, capsys):
+    """상태 확인: channels:read 가 없어도 실패가 아님 · 앱 토큰 invalid_auth 는 원인·고치는 법과 함께 ✘.
+    서비스: Slack 연결이 실패해도 죽지 않고 기다렸다 다시 시도."""
+    pytest.importorskip("slack_sdk")
+    from slack_sdk import WebClient
+    from slack_sdk.errors import SlackApiError
+    from hsoar import __main__ as m
+
+    d = tmp_path / "hs"
+    d.mkdir()
+    (d / "addon.env").write_text("RKMSIEM_URL=http://127.0.0.1:1\nRKMSIEM_TOKEN=rkm_x\n")
+    (d / "hsoar.env").write_text("SLACK_BOT_TOKEN=xoxb-1\nSLACK_APP_TOKEN=xapp-1\nSLACK_CHANNEL=C0TEST\nALLOWED_USERS=U1\n")
+    monkeypatch.setattr(m, "ADDON_DIR", str(d))
+    monkeypatch.setattr(m, "ADDON_ENV", str(d / "addon.env"))
+    monkeypatch.setattr(m, "STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(m.RK, "feed", lambda self, **kw: {"items": [], "last_seq": 0})
+
+    def err(code):
+        return SlackApiError("x", {"ok": False, "error": code})
+
+    app_ok = {"v": False}
+
+    def conn_open(self, **kw):
+        if not app_ok["v"]:
+            raise err("invalid_auth")
+        return {"ok": True, "url": "wss://x"}
+
+    monkeypatch.setattr(WebClient, "auth_test", lambda self, **kw: {"user": "hsoar", "team": "HSOAR"})
+    monkeypatch.setattr(WebClient, "apps_connections_open", conn_open)
+    monkeypatch.setattr(WebClient, "conversations_info", lambda self, **kw: (_ for _ in ()).throw(err("missing_scope")))
+
+    assert m.check() == 1
+    out = capsys.readouterr().out
+    assert "✔ Slack 봇 토큰: hsoar @ HSOAR" in out
+    assert "✘ Slack 앱 토큰(xapp-): invalid_auth (토큰이 틀렸거나 폐기됨)" in out and "connections:write" in out
+    assert "확인 생략" in out and "✘ 채널" not in out
+    app_ok["v"] = True
+    assert m.check() == 0
+
+    # 서비스: serve 가 SlackApiError → 프로세스 종료 없이 대기 후 재시도
+    import hsoar.slackio as sio
+    tries = []
+
+    def bad_serve(*a):
+        tries.append(1)
+        raise err("invalid_auth")
+
+    monkeypatch.setattr(sio, "serve", bad_serve)
+    waits = []
+
+    class Ev:
+        def is_set(self):
+            return False
+
+        def set(self):
+            pass
+
+        def wait(self, t):
+            waits.append(t)
+            return len(waits) >= 3                          # 세 번째 대기 중 종료 신호
+
+    monkeypatch.setattr(m.threading, "Event", Ev)
+    monkeypatch.setattr(m.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(sys, "argv", ["hsoar"])
+    m.main()                                                # 예외 없이 끝나야 함
+    assert len(tries) == 3 and waits == [30, 60, 120]

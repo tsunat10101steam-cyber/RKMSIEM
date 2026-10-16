@@ -52,6 +52,25 @@ def config():
     return c, missing
 
 
+HINTS = {
+    "invalid_auth": "토큰이 틀렸거나 폐기됨",
+    "not_authed": "토큰이 비어 있음",
+    "token_revoked": "토큰이 폐기됨 — 새로 발급",
+    "account_inactive": "앱이 삭제되었거나 워크스페이스에서 제거됨",
+    "not_allowed_token_type": "토큰 종류가 다름 — 봇 토큰(xoxb-)과 앱 토큰(xapp-)이 서로 바뀌지 않았는지",
+}
+APP_TOKEN_HELP = ("api.slack.com/apps → HSOAR → Basic Information → App-Level Tokens → Generate (scope connections:write), "
+                  "Socket Mode 켜짐 확인 → sudo rkmsiem-setup → 추가 기능 → HSOAR → 설정 의 앱 토큰(xapp-)에 입력")
+
+
+def slack_err(e):
+    """SlackApiError → 'invalid_auth (토큰이 틀렸거나 폐기됨)'"""
+    code = getattr(getattr(e, "response", None), "get", lambda *_: None)("error")
+    if not code:
+        return str(e)
+    return f"{code} ({HINTS[code]})" if code in HINTS else code
+
+
 def build(c):
     from slack_sdk import WebClient
     from .slackio import SlackChat
@@ -87,14 +106,49 @@ def check():
         print(f"✘ policy.json: {e}")
     try:
         from slack_sdk import WebClient
-        w = WebClient(token=c["SLACK_BOT_TOKEN"])
+        from slack_sdk.errors import SlackApiError
+    except ImportError as e:
+        print(f"✘ slack_sdk 없음: {e} — HSOAR 를 다시 설치")
+        return 1
+    w = WebClient(token=c["SLACK_BOT_TOKEN"])
+    bot = "hsoar"
+    try:
         a = w.auth_test()
-        print(f"✔ Slack 봇 {a['user']} @ {a['team']}")
-        w.conversations_info(channel=c["SLACK_CHANNEL"])
-        print(f"✔ 채널 {c['SLACK_CHANNEL']} (봇을 채널에 초대했는지: /invite @{a['user']})")
+        bot = a["user"]
+        print(f"✔ Slack 봇 토큰: {a['user']} @ {a['team']}")
+    except SlackApiError as e:
+        ok = False
+        print(f"✘ Slack 봇 토큰(xoxb-): {slack_err(e)} — Slack 앱 → OAuth & Permissions → Bot User OAuth Token")
     except Exception as e:                                  # noqa: BLE001
         ok = False
-        print(f"✘ Slack: {e}")
+        print(f"✘ Slack 연결: {e}")
+    try:                                                    # Socket Mode 연결 주소만 받아 봄 (실제 연결은 안 함)
+        WebClient().apps_connections_open(app_token=c["SLACK_APP_TOKEN"])
+        print("✔ Slack 앱 토큰 (Socket Mode)")
+    except SlackApiError as e:
+        ok = False
+        print(f"✘ Slack 앱 토큰(xapp-): {slack_err(e)} — {APP_TOKEN_HELP}")
+    except Exception as e:                                  # noqa: BLE001
+        ok = False
+        print(f"✘ Slack 연결: {e}")
+    try:                                                    # 채널 확인은 channels:read 권한이 있을 때만 — 없어도 동작에는 지장 없음
+        ch = w.conversations_info(channel=c["SLACK_CHANNEL"])["channel"]
+        if ch.get("is_member") is False:
+            ok = False
+            print(f"✘ 채널 {c['SLACK_CHANNEL']}: 봇이 채널에 없음 — 그 채널에서 /invite @{bot}")
+        else:
+            print(f"✔ 채널 {c['SLACK_CHANNEL']}")
+    except SlackApiError as e:
+        code = e.response.get("error")
+        if code == "missing_scope":
+            print(f"· 채널 {c['SLACK_CHANNEL']}: 확인 생략 (권한 없음 — 정상) · 그 채널에서 /invite @{bot} 했는지 확인")
+        elif code == "channel_not_found":
+            ok = False
+            print(f"✘ 채널 {c['SLACK_CHANNEL']}: 찾을 수 없음 — 채널 ID(C…) 확인, 비공개 채널이면 먼저 /invite @{bot}")
+        elif code not in ("invalid_auth", "not_authed", "token_revoked", "account_inactive"):   # 봇 토큰 문제는 위에서 이미 표시
+            print(f"· 채널 {c['SLACK_CHANNEL']}: 확인 못 함 ({slack_err(e)})")
+    except Exception:                                       # noqa: BLE001
+        pass
     print(f"허용된 사람 (ALLOWED_USERS): {', '.join(c['ALLOWED']) or '없음 — 버튼·조치 명령을 아무도 못 씀'}")
     return 0 if ok else 1
 
@@ -114,8 +168,23 @@ def main():
     if stop.is_set():
         return
     eng, web = build(c)
+    from slack_sdk.errors import SlackApiError
     from .slackio import serve
-    client = serve(eng, c["SLACK_APP_TOKEN"], web)
+    wait = 30
+    while True:                                             # 토큰이 틀려도 재시작을 반복하지 않고 천천히 다시 시도
+        try:
+            client = serve(eng, c["SLACK_APP_TOKEN"], web)
+            break
+        except SlackApiError as e:
+            log.error("Slack 연결 실패: %s — 앱 토큰(xapp-) 확인: %s · %d초 뒤 다시", slack_err(e), APP_TOKEN_HELP, wait)
+        except Exception as e:                              # noqa: BLE001  (네트워크 등)
+            log.error("Slack 연결 실패: %s — %d초 뒤 다시", e, wait)
+        if stop.wait(wait):
+            return
+        wait = min(wait * 2, 300)
+        c, _ = config()                                     # 그동안 설정을 고쳤으면 새 토큰으로
+        if c.get("SLACK_BOT_TOKEN") != web.token:
+            eng, web = build(c)
     log.info("시작 — 자동 모드 %s · 허용된 사람 %d명", eng.mode(), len(c["ALLOWED"]))
     backoff = 2
     while not stop.is_set():

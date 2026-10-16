@@ -72,3 +72,14 @@ RKMSIEM 쪽에는 행위자 `token:addon-hsoar`, 사유에 `Slack @이름 (U…)
 | `/var/lib/rkmsiem-hsoar/state.json` | 피드 위치 · 올린 메시지 · 일시 정지 · 자동 모드 |
 | `/opt/rkmsiem-hsoar/` | 프로그램 (venv + slack_sdk) |
 | `journalctl -u rkmsiem-hsoar -f` | 로그 |
+
+## 문제 해결 — `sudo rkmsiem-setup → 추가 기능 → HSOAR → 상태 확인`
+
+| 표시 | 원인 · 고치는 법 |
+|---|---|
+| `✘ Slack 앱 토큰(xapp-): invalid_auth` | 앱 레벨 토큰이 틀렸거나 폐기됨 (봇 토큰과 바뀌어 들어간 경우 포함). Slack 앱 → **Basic Information → App-Level Tokens → Generate** (scope `connections:write`), **Socket Mode** 켜짐 확인 → 설정에서 앱 토큰 다시 입력 |
+| `✘ Slack 봇 토큰(xoxb-): invalid_auth` | **OAuth & Permissions → Bot User OAuth Token** 을 다시 복사 (앱을 재설치했으면 바뀜) |
+| `· 채널 …: 확인 생략` | 정상 — 앱에 채널 읽기 권한을 주지 않으므로. 그 채널에서 `/invite @hsoar` 했는지만 확인 |
+| 로그 `Slack 연결 실패 … 초 뒤 다시` | 서비스는 죽지 않고 30초→5분 간격으로 다시 시도. 설정을 고치면 `sudo systemctl restart rkmsiem-hsoar` 로 바로 |
+
+토큰은 비밀번호와 같다 — 채팅·스크린샷에 올렸다면 Slack 에서 폐기하고 새로 발급.
