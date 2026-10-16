@@ -665,6 +665,87 @@ def create_app(platform):
                                      "parse_errors": p.metrics.total("parse_errors_total"),
                                      "latency": p.metrics.hist_summary("ingest_latency_ms")}})
 
+    # ------------------------------------------------------------ 당겨오기 (다른 시스템 API 를 주기적으로 조회)
+    @app.get("/api/pull")
+    @require("collectors:read")
+    def pull_list():
+        from .collectors.http_pull import vault_name
+        set_names = {r["name"] for r in p.db.all("SELECT name FROM secrets WHERE name LIKE 'pull:%'")}
+        out = []
+        for sid, cfg in p.sources().items():
+            if cfg["type"] != "http_pull":
+                continue
+            c = p.collectors.get(sid)
+            cur = p.db.one("SELECT value, updated_at FROM collector_state WHERE source_id=? AND key='cursor'", (sid,))
+            out.append({"source": cfg, "secret_set": vault_name(sid) in set_names, "status": c.status() if c else None,
+                        "cursor": json.loads(cur["value"]) if cur else None})
+        return jsonify({"items": out, "version": p.config.version("sources")})
+
+    @app.post("/api/pull/test")
+    @require("config:write")
+    def pull_test():
+        """저장 전에 한 번 조회해 보기 — 받은 항목 앞부분과 변환(정규화) 결과. 저장·탐지는 하지 않음."""
+        from . import normalize as norm
+        from .collectors.http_pull import PullError, pull_once, secret_for
+        from .pipeline import make_record
+        from .validators import _pull_errors
+        b = body({"type": "object", "required": ["source"], "additionalProperties": False,
+                  "properties": {"source": {"type": "object"}, "secret": {"type": "string", "maxLength": 4096}}})
+        src = dict(b["source"], type="http_pull")
+        src.setdefault("id", "test")
+        src.setdefault("parser", "json")
+        errs = _pull_errors(src)
+        if errs:
+            raise ApiError(400, "invalid_source", errs)
+        opt = dict(src.get("options") or {}, max_pages=1, max_items=50)
+        try:
+            secret = b.get("secret") or secret_for(opt, src["id"], p.vault)
+            t0 = time.time()
+            items, cursor = pull_once(opt, secret, None)
+        except (PullError, OSError, ValueError) as e:
+            p.audit.record(actor(), "pull.test", "source", src["id"], None, {"ok": False, "error": str(e)[:200]})
+            return jsonify({"ok": False, "error": str(e)[:500]}), 200
+        parsed = []
+        for it in items[:5]:
+            try:
+                doc, _ = norm.normalize(make_record(src["id"], json.dumps(it, ensure_ascii=False)), src)
+                parsed.append({"doc": doc})
+            except Exception as e:                       # noqa: BLE001
+                parsed.append({"error": str(e)[:300]})
+        p.audit.record(actor(), "pull.test", "source", src["id"], None, {"ok": True, "items": len(items)})
+        return jsonify({"ok": True, "count": len(items), "ms": round((time.time() - t0) * 1000), "cursor": cursor,
+                        "items": [json.dumps(x, ensure_ascii=False)[:2000] for x in items[:3]], "parsed": parsed})
+
+    @app.post("/api/pull/<sid>/secret")
+    @require("config:write")
+    def pull_secret(sid):
+        from .collectors.http_pull import vault_name
+        from .vault import VaultError
+        b = body({"type": "object", "required": ["value"], "additionalProperties": False, "properties": {"value": {"type": "string", "maxLength": 4096}}})
+        try:
+            p.vault.set(vault_name(sid), b["value"], actor())
+        except VaultError as e:
+            raise ApiError(400, str(e))
+        return jsonify({"ok": True})
+
+    @app.delete("/api/pull/<sid>/secret")
+    @require("config:write")
+    def pull_secret_clear(sid):
+        from .collectors.http_pull import vault_name
+        from .vault import VaultError
+        try:
+            p.vault.clear(vault_name(sid), actor())
+        except VaultError as e:
+            raise ApiError(400, str(e))
+        return jsonify({"ok": True})
+
+    @app.post("/api/pull/<sid>/cursor/reset")
+    @require("config:write")
+    def pull_cursor_reset(sid):
+        p.db.execute("DELETE FROM collector_state WHERE source_id=? AND key='cursor'", (sid,))
+        p.audit.record(actor(), "pull.cursor_reset", "source", sid)
+        return jsonify({"ok": True})
+
     @app.get("/api/dlq")
     @require("dlq:read")
     def dlq():

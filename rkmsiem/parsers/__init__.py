@@ -115,8 +115,15 @@ def parse_json(raw, opt):
             _set(doc, tgt, (opt.get("outcome_map") or {}).get(v, v if v in ("success", "failure") else "unknown"))
         else:
             _set(doc, tgt, v if isinstance(v, (int, float, bool, list, dict)) else str(v)[:4096])
+    for tgt, v in (opt.get("static") or {}).items():        # 고정 값 (예: event.module: prometheus) — 매핑 값이 있으면 그쪽 우선
+        if value_of(doc, tgt) is None:
+            _set(doc, tgt, [v] if tgt == "event.category" and not isinstance(v, list) else v)
     if "@timestamp" not in doc:
-        raise ParseError("timestamp missing")
+        if opt.get("default_now"):                               # 시각이 없는 항목(현재 상태 목록 등)은 가져온 시각
+            from datetime import datetime as _dt, timezone as _tz
+            doc["@timestamp"] = _dt.now(_tz.utc).isoformat()
+        else:
+            raise ParseError("timestamp missing")
     doc["event"].setdefault("category", [opt.get("default_category", "event")])
     if warnings:
         doc.setdefault("labels", {})["parse_warnings"] = warnings

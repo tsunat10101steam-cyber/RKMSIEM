@@ -233,6 +233,8 @@ class Platform:
                 log.error("unknown collector type %s", cfg["type"])
                 continue
             c = cls(cfg, self.pipeline, self.db, self.metrics)
+            if hasattr(c, "vault"):
+                c.vault = self.vault                   # 당겨오기: 웹에서 넣은 토큰 (암호화 보관)
             c.start()
             self.collectors[sid] = c
 

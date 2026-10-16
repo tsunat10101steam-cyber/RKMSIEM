@@ -33,7 +33,7 @@ def action(name, destructive=False, description=""):
 
 def load_builtin():
     """내장 플러그인 모듈을 import 해 데코레이터 등록을 실행한다."""
-    for m in ("parsers", "collectors.file_tail", "collectors.http", "collectors.syslog_udp", "collectors.journald", "soar.actions"):
+    for m in ("parsers", "collectors.file_tail", "collectors.http", "collectors.syslog_udp", "collectors.journald", "collectors.http_pull", "soar.actions"):
         importlib.import_module(f"{__package__}.{m}")
 
 

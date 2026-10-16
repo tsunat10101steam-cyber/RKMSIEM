@@ -3,7 +3,7 @@
    app.js 보다 먼저 읽히며 app.js 의 공통 도구($, api, esc, toast …)를 호출 시점에 사용한다. */
 "use strict";
 
-const ST_TABS = [["mail", "✉ 메일 서버"], ["people", "⇄ 받는 사람 · 알림"], ["reports", "◷ 보고서 일정"], ["lists", "☰ 목록"], ["rep", "⌕ 평판 (AbuseIPDB)"], ["data", "⌫ 데이터 초기화"]];
+const ST_TABS = [["mail", "✉ 메일 서버"], ["people", "⇄ 받는 사람 · 알림"], ["reports", "◷ 보고서 일정"], ["lists", "☰ 목록"], ["rep", "⌕ 평판 (AbuseIPDB)"], ["pull", "⇣ 당겨오기"], ["data", "⌫ 데이터 초기화"]];
 const ST_PRESETS = {
   gmail: { label: "Gmail", host: "smtp.gmail.com", port: 587, security: "starttls", note: "Google 계정 → 보안 → 2단계 인증 → '앱 비밀번호' 를 만들어 아래 비밀번호에 넣으세요." },
   naver: { label: "Naver", host: "smtp.naver.com", port: 587, security: "starttls", note: "네이버 메일 → 환경설정 → POP3/IMAP 설정에서 SMTP 사용을 켜세요. 2단계 인증이면 애플리케이션 비밀번호." },
@@ -16,7 +16,7 @@ const ST_LIST_KO = { internal_networks: ["사내망", "이 대역의 IP 는 위�
 const ST_EVERY = [["day", "매일"], ["monday", "월요일"], ["tuesday", "화요일"], ["wednesday", "수요일"], ["thursday", "목요일"], ["friday", "금요일"], ["saturday", "토요일"], ["sunday", "일요일"]];
 const ST_SEV = [["critical", "긴급만"], ["high", "높음 이상"], ["medium", "주의 이상"], ["low", "낮음 이상"]];
 const ST_EMAIL = /^[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/, ST_DOMAIN = /^@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
-const ST_KINDS = { mail: "mail", reports: "reports", rep: "reputation", lists: "lists" };
+const ST_KINDS = { mail: "mail", reports: "reports", rep: "reputation", lists: "lists", pull: "sources" };
 
 const SET = { el: null, tab: "mail", ro: true, saved: {}, draft: {}, ver: {}, secrets: null, pick: null };
 const stClone = o => JSON.parse(JSON.stringify(o));
@@ -26,8 +26,8 @@ addEventListener("beforeunload", e => { if (SET.el?.isConnected && Object.keys(S
 async function renderSettings(el, live, arg) {
   SET.el = el; SET.ro = !can("config:write");
   if (arg && ST_TABS.some(t => t[0] === arg.trim())) SET.tab = arg.trim();
-  const [m, r, rp, l, sec] = await Promise.all(["mail", "reports", "reputation", "lists"].map(k => api(`/api/config/${k}`)).concat(api("/api/secrets")));
-  for (const [k, x] of [["mail", m], ["reports", r], ["rep", rp], ["lists", l]]) { SET.saved[k] = x.content || {}; SET.ver[k] = x; }
+  const [m, r, rp, l, so, sec] = await Promise.all(["mail", "reports", "reputation", "lists", "sources"].map(k => api(`/api/config/${k}`)).concat(api("/api/secrets")));
+  for (const [k, x] of [["mail", m], ["reports", r], ["rep", rp], ["lists", l], ["pull", so]]) { SET.saved[k] = x.content || {}; SET.ver[k] = x; }
   SET.draft = stClone(SET.saved); SET.secrets = sec;
   el.innerHTML = `<div class="meta-line"><span>저장하면 <b>재시작 없이 바로 적용</b> · 버전 기록 · 감사 로그</span>
       <span>비밀번호·API 키: <b>${sec.ready ? "암호화 저장" : "<span class='c-critical'>사용 불가</span>"}</b>${sec.key_source === "file" ? " <span class='c-medium'>(암호화 키가 DB 옆 파일 — 운영은 RKMSIEM_SECRET_KEY 권장)</span>" : ""}</span>
@@ -45,13 +45,13 @@ function stTab(k, anim = true) {
   $$(".st-tab", SET.el).forEach(b => b.setAttribute("aria-selected", b.dataset.tab === k));
   const body = $(".st-body", SET.el);
   stOnChange(body, null);
-  ({ mail: stMail, people: stPeople, reports: stReports, lists: stLists, rep: stRep, data: stData })[k](body);
+  ({ mail: stMail, people: stPeople, reports: stReports, lists: stLists, rep: stRep, pull: stPull, data: stData })[k](body);
   $(".st-bar", SET.el).style.display = k === "data" ? "none" : "";          // 데이터 탭은 저장할 설정이 없음
   stMark();
   if (anim && M) M.animate(body, { opacity: [0, 1], y: [10, 0] }, { type: "spring", stiffness: 260, damping: 24 });
 }
 // 탭 ↔ 저장 대상 (받는 사람 탭은 mail + reports 를 함께 바꿈)
-const stKindsOf = t => ({ mail: ["mail"], people: ["mail", "reports"], reports: ["reports"], lists: ["lists"], rep: ["rep"], data: [] })[t];
+const stKindsOf = t => ({ mail: ["mail"], people: ["mail", "reports"], reports: ["reports"], lists: ["lists"], rep: ["rep"], pull: ["pull"], data: [] })[t];
 function stMark() {
   if (!SET.el) return;
   const tabDirty = t => stKindsOf(t).some(stDirty);
@@ -386,4 +386,140 @@ async function stData(box) {
     };
     load();
   }
+}
+
+
+// ================================================================ 당겨오기 (다른 시스템 API 를 주기적으로 조회)
+// 저장 대상은 'sources' 설정 — 이 탭은 type: http_pull 항목만 보여 주고 고친다 (다른 수집기는 그대로)
+const PULL_PRESETS = {
+  prometheus: { label: "Prometheus 경보", note: "Prometheus 의 지금 울리는 경보(firing)를 가져옵니다. CPU 급증(크립토재킹)·서비스 다운 같은 지표 경보가 사건으로 묶입니다.",
+    src: { id: "prometheus", dataset: "pull.prometheus", options: { url: "http://127.0.0.1:9090/api/v1/alerts", interval_sec: 60, items_path: "data.alerts",
+      only_if: { state: ["firing"] }, id_fields: ["labels.alertname", "labels.instance", "activeAt"],
+      field_map: { "@timestamp": "activeAt", "rule.name": "labels.alertname", "host.name": "labels.instance", "labels.severity": "labels.severity", "message": "annotations.summary" },
+      static: { "event.action": "external_alert", "event.category": "metric", "observer.product": "prometheus" } } } },
+  k8s: { label: "Kubernetes 경고 이벤트", note: "API 서버의 Warning 이벤트(이미지 받기 실패·OOM·재시작 반복 등). 읽기 전용 ServiceAccount 토큰을 쓰고, 인증서는 지문으로 고정하세요.",
+    src: { id: "k8s-events", dataset: "pull.kubernetes", options: { url: "https://API서버:6443/api/v1/events?fieldSelector=type%3DWarning&limit=500", interval_sec: 60,
+      auth: { type: "bearer" }, tls: { fingerprint: "" }, items_path: "items", next_path: "metadata.continue", next_param: "continue", default_now: true,
+      id_fields: ["metadata.uid", "count"],
+      field_map: { "@timestamp": "lastTimestamp", "rule.name": "reason", "host.name": "involvedObject.name", "message": "message",
+        "labels.namespace": "involvedObject.namespace", "labels.kind": "involvedObject.kind" },
+      static: { "event.action": "external_alert", "event.category": "configuration", "observer.product": "kubernetes", "labels.severity": "warning" } } } },
+  json: { label: "일반 JSON API", note: "사내 시스템의 이벤트 API. 커서(마지막으로 받은 시각)를 기억해 그 뒤만 가져옵니다.",
+    src: { id: "my-api", dataset: "pull.json", options: { url: "https://api.example.com/events?since={cursor}", interval_sec: 60, auth: { type: "bearer" },
+      items_path: "items", id_fields: ["id"], cursor: { field: "timestamp", start: "now" },
+      field_map: { "@timestamp": "timestamp", "message": "message", "source.ip": "src_ip", "user.name": "user" } } } },
+};
+const PULL = { edit: null, status: {}, test: null, preset: null };
+const stPullList = () => (SET.draft.pull.sources ||= []).filter(s => s.type === "http_pull");
+const stMapText = o => Object.entries(o || {}).map(([k, v]) => `${k} = ${Array.isArray(v) ? v.join(", ") : v}`).join("\n");
+function stParseMap(text, list = false) {         // "대상 = 값" 줄 → 객체 (only_if 는 쉼표로 여러 값)
+  const o = {};
+  for (const line of String(text || "").split("\n")) { const m = line.match(/^\s*([^=]+?)\s*=\s*(.*?)\s*$/); if (!m || !m[1]) continue;
+    o[m[1]] = list ? m[2].split(",").map(x => x.trim()).filter(Boolean) : m[2]; }
+  return o;
+}
+async function stPull(box) {
+  try { const r = await api("/api/pull"); PULL.status = Object.fromEntries(r.items.map(x => [x.source.id, x])); } catch (e) { PULL.status = {}; }
+  const items = stPullList(), ago = t => t ? fmtT(t) : "-";
+  box.innerHTML = `<p class="hint">다른 시스템의 API 를 <b>주기적으로 조회</b>해 이벤트로 가져옵니다 (Prometheus 경보 · Kubernetes 이벤트 · 사내 JSON API).
+      같은 항목은 한 번만 저장되고, 커서를 쓰면 마지막으로 받은 뒤의 것만 요청합니다. 토큰은 암호화 저장되며 다시 볼 수 없습니다.</p>
+    <div class="pl-list">${items.map(s => { const st = PULL.status[s.id] || {}, c = st.status || {}, o = s.options || {};
+      const bad = c.state === "error", run = c.state === "running";
+      return `<div class="pl-card ${s.enabled === false ? "off" : ""}" data-id="${esc(s.id)}">
+        <div class="pl-h"><b>${esc(s.id)}</b><span class="dim">${esc(s.dataset || "")}</span><span class="grow"></span>
+          <span class="${bad ? "c-critical" : run ? "acc" : "faint"}">● ${esc(s.enabled === false ? "꺼짐" : !c.state ? "저장 후 시작" : c.state)}</span></div>
+        <div class="pl-url">${esc(o.url || "")} <span class="faint">· ${esc(o.interval_sec || 60)}초마다${o.auth ? ` · 인증 ${esc(o.auth.type || "bearer")} ${st.secret_set ? "<span class='acc'>토큰 있음</span>" : o.auth.token_env ? `env ${esc(o.auth.token_env)}` : "<span class='c-high'>토큰 없음</span>"}` : ""}</span></div>
+        <div class="pl-st faint">마지막 조회 ${ago(c.last_poll_at)} · 가져옴 ${fmt(c.last_count || 0)}건 (누적 ${fmt(c.received || 0)})${st.cursor != null ? ` · 커서 <code>${esc(String(st.cursor))}</code>` : ""}${bad ? `<br><span class="c-critical">${esc(c.last_error || "")}</span>` : ""}</div>
+        ${SET.ro ? "" : `<div class="st-row pl-acts"><button class="btn" data-a="edit">편집</button><button class="btn" data-a="toggle">${s.enabled === false ? "켜기" : "끄기"}</button>
+          ${st.cursor != null ? `<button class="btn" data-a="cursor" title="처음 설정(start)부터 다시">커서 초기화</button>` : ""}<button class="btn danger" data-a="del">삭제</button></div>`}</div>`; }).join("")
+      || `<div class="faint">아직 당겨오기 소스가 없습니다.</div>`}</div>
+    ${SET.ro ? "" : `<div class="st-h">새로 추가 <span class="faint">· 프리셋을 고르고 주소·토큰만 바꾸면 됩니다</span></div>
+      <div class="st-presets">${Object.entries(PULL_PRESETS).map(([k, x]) => `<button class="st-pre" data-pp="${k}">${esc(x.label)}</button>`).join("")}</div>`}
+    <div class="pl-edit"></div>`;
+  if (SET.ro) return;
+  $$("[data-pp]", box).forEach(b => b.onclick = () => { const x = PULL_PRESETS[b.dataset.pp], ids = new Set(SET.draft.pull.sources.map(s => s.id));
+    let id = x.src.id, n = 1; while (ids.has(id)) id = `${x.src.id}-${++n}`;
+    PULL.edit = { isNew: true, src: { ...JSON.parse(JSON.stringify(x.src)), id, type: "http_pull", parser: "json", enabled: true } }; PULL.preset = x.note; PULL.test = null; stPullEditor(box); });
+  $$(".pl-card", box).forEach(card => $$("[data-a]", card).forEach(b => b.onclick = async () => {
+    const id = card.dataset.id, list = SET.draft.pull.sources, i = list.findIndex(s => s.id === id);
+    if (b.dataset.a === "edit") { PULL.edit = { isNew: false, src: JSON.parse(JSON.stringify(list[i])) }; PULL.preset = null; PULL.test = null; stPullEditor(box); }
+    if (b.dataset.a === "toggle") { list[i].enabled = list[i].enabled === false; stTouch(); stPull(box); }
+    if (b.dataset.a === "del" && confirm(`${id} 를 지울까요? (저장해야 적용 · 이미 가져온 이벤트는 남음)`)) { list.splice(i, 1); stTouch(); stPull(box); }
+    if (b.dataset.a === "cursor" && confirm(`${id} 의 커서를 지울까요? 다음 조회부터 처음 설정(start)대로 다시 가져옵니다.`)) {
+      try { await api(`/api/pull/${encodeURIComponent(id)}/cursor/reset`, { method: "POST" }); toast("커서 초기화"); stPull(box); } catch (e) { toast(`<span class="err">${esc(errMsg(e))}</span>`, "critical"); } }
+  }));
+  if (PULL.edit) stPullEditor(box);
+}
+function stPullEditor(box) {
+  const ed = $(".pl-edit", box), s = PULL.edit.src, o = (s.options ||= {}), a = o.auth || null, tls = o.tls || {}, cur = o.cursor || {};
+  ed.innerHTML = `<div class="pl-form"><div class="st-h">${PULL.edit.isNew ? "새 당겨오기" : `편집 — ${esc(s.id)}`}</div>
+    ${PULL.preset ? `<div class="st-note">${esc(PULL.preset)}</div>` : ""}
+    <div class="st-f3"><label>ID <span class="faint">(영문 소문자)</span><input data-f="id" value="${esc(s.id)}" ${PULL.edit.isNew ? "" : "disabled"}></label>
+      <label>데이터셋 <span class="faint">(검색·규칙용 이름)</span><input data-f="dataset" value="${esc(s.dataset || "")}"></label>
+      <label>조회 간격(초)<input data-f="interval_sec" inputmode="numeric" value="${esc(o.interval_sec || 60)}"></label></div>
+    <label>주소 <span class="faint">({cursor} 자리에 커서 값 · 인증을 쓰면 https 만 — 이 서버 안 127.0.0.1 은 http 가능)</span><input data-f="url" value="${esc(o.url || "")}"></label>
+    <div class="st-f3"><label>인증<select data-f="auth_type">${[["", "없음"], ["bearer", "Bearer 토큰"], ["basic", "Basic (계정·비밀번호)"], ["header", "헤더에 키"]]
+        .map(([v, l]) => `<option value="${v}" ${(a ? a.type || "bearer" : "") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <label class="pl-auser">${a?.type === "header" ? "헤더 이름" : "계정"}<input data-f="auth_extra" value="${esc(a?.type === "header" ? a.header || "X-API-Key" : a?.user || "")}" ${a && (a.type === "basic" || a.type === "header") ? "" : "disabled"}></label>
+      <label>토큰·비밀번호 <span class="faint">${(PULL.status[s.id] || {}).secret_set ? "· <span class='acc'>저장됨</span>" : ""}</span><div class="st-row"><input type="password" class="pl-secret" autocomplete="new-password" placeholder="${a ? "입력 후 '토큰 저장'" : "인증 없음"}" ${a ? "" : "disabled"}><button class="btn" data-x="secret" ${a ? "" : "disabled"}>토큰 저장</button></div></label></div>
+    <div class="st-f3"><label>인증서 지문 <span class="faint">(자체 서명이면 SHA-256)</span><input data-f="fingerprint" value="${esc(tls.fingerprint || "")}" placeholder="AB:CD:…"></label>
+      <label>목록 위치 <span class="faint">(예: data.alerts · items)</span><input data-f="items_path" value="${esc(o.items_path || "")}"></label>
+      <label>같은 항목 구별 <span class="faint">(쉼표)</span><input data-f="id_fields" value="${esc((o.id_fields || []).join(", "))}"></label></div>
+    <div class="st-f3"><label>커서 필드 <span class="faint">(비우면 안 씀)</span><input data-f="cursor_field" value="${esc(cur.field || "")}" placeholder="timestamp"></label>
+      <label>커서 쿼리 이름 <span class="faint">(주소에 {cursor} 가 없을 때)</span><input data-f="cursor_param" value="${esc(cur.param || "")}" placeholder="since"></label>
+      <label>처음 시작<select data-f="cursor_start"><option value="now" ${cur.start !== "beginning" ? "selected" : ""}>지금부터</option><option value="beginning" ${cur.start === "beginning" ? "selected" : ""}>처음부터 (과거 전체)</option></select></label></div>
+    <div class="st-f3"><label>다음 쪽 위치 <span class="faint">(쪽 나눔 · 선택)</span><input data-f="next_path" value="${esc(o.next_path || "")}" placeholder="metadata.continue"></label>
+      <label>다음 쪽 쿼리<input data-f="next_param" value="${esc(o.next_param || "")}" placeholder="continue"></label>
+      <label class="st-sw sm pl-now"><input type="checkbox" data-f="default_now" ${o.default_now ? "checked" : ""}><i></i><span>시각이 없으면 가져온 시각</span></label></div>
+    <div class="st-grid2"><label>필드 매핑 <span class="faint">(정규화 필드 = 응답 경로, 한 줄에 하나)</span><textarea data-f="field_map" rows="6">${esc(stMapText(o.field_map))}</textarea></label>
+      <div><label>고정 값 <span class="faint">(필드 = 값)</span><textarea data-f="static" rows="3">${esc(stMapText(o.static))}</textarea></label>
+        <label>이 조건만 <span class="faint">(경로 = 값1, 값2)</span><textarea data-f="only_if" rows="2">${esc(stMapText(o.only_if))}</textarea></label></div></div>
+    <div class="st-row pl-btns"><button class="btn" data-x="test">지금 시험 (저장 안 함)</button><span class="grow"></span>
+      <button class="btn" data-x="cancel">닫기</button><button class="btn primary" data-x="apply">${PULL.edit.isNew ? "목록에 추가" : "고친 내용 반영"}</button></div>
+    <div class="pl-test">${PULL.test || ""}</div>
+    <p class="hint">'목록에 추가' 뒤 아래 <b>저장</b>을 눌러야 수집이 시작됩니다. 경보로 만들려면 고정 값에 <code>event.action = external_alert</code> (기본 규칙 '외부 시스템 경보').</p></div>`;
+  const val = k => $(`[data-f="${k}"]`, ed);
+  const collect = () => {                                            // 화면 값 → source 객체
+    const src = JSON.parse(JSON.stringify(PULL.edit.src)), op = src.options ||= {};
+    src.id = val("id").value.trim(); src.dataset = val("dataset").value.trim() || undefined; if (!src.dataset) delete src.dataset;
+    op.url = val("url").value.trim(); op.interval_sec = +val("interval_sec").value || 60;
+    const at = val("auth_type").value, ex = val("auth_extra").value.trim();
+    if (at) { op.auth = { ...(op.auth?.token_env ? { token_env: op.auth.token_env } : {}), type: at, ...(at === "basic" ? { user: ex } : at === "header" ? { header: ex || "X-API-Key" } : {}) }; } else delete op.auth;
+    const fp = val("fingerprint").value.trim(); fp ? (op.tls = { ...(op.tls || {}), fingerprint: fp }) : (op.tls && delete op.tls.fingerprint, op.tls && !Object.keys(op.tls).length && delete op.tls);
+    const set = (k, v) => { v === "" || v == null || (Array.isArray(v) && !v.length) || (typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) ? delete op[k] : op[k] = v; };
+    set("items_path", val("items_path").value.trim()); set("id_fields", val("id_fields").value.split(",").map(x => x.trim()).filter(Boolean));
+    set("next_path", val("next_path").value.trim()); set("next_param", val("next_param").value.trim());
+    const cf = val("cursor_field").value.trim(); cf ? op.cursor = { field: cf, start: val("cursor_start").value, ...(val("cursor_param").value.trim() ? { param: val("cursor_param").value.trim() } : {}) } : delete op.cursor;
+    op.default_now = val("default_now").checked || undefined; if (!op.default_now) delete op.default_now;
+    set("field_map", stParseMap(val("field_map").value)); set("static", stParseMap(val("static").value)); set("only_if", stParseMap(val("only_if").value, true));
+    return src;
+  };
+  val("auth_type").onchange = () => { PULL.edit.src = collect(); stPullEditor(box); };
+  $('[data-x="cancel"]', ed).onclick = () => { PULL.edit = null; ed.innerHTML = ""; };
+  $('[data-x="apply"]', ed).onclick = () => {
+    const src = collect(), list = SET.draft.pull.sources;
+    if (!/^[a-z][a-z0-9_-]*$/.test(src.id)) { shake(val("id"), 5); toast("ID: 영문 소문자로 시작 (숫자·-·_ 가능)", "high"); return; }
+    if (!/^https?:\/\/./.test(src.options.url)) { shake(val("url"), 5); toast("주소는 http:// 또는 https:// 로", "high"); return; }
+    const i = list.findIndex(x => x.id === src.id);
+    if (PULL.edit.isNew && i >= 0) { shake(val("id"), 5); toast("같은 ID 가 이미 있습니다", "high"); return; }
+    i >= 0 ? list[i] = src : list.push(src);
+    PULL.edit = null; stTouch(); stPull(box); toast(`${esc(src.id)} 반영 — 아래 '저장'을 누르면 수집 시작`);
+  };
+  $('[data-x="secret"]', ed).onclick = async () => { const v = $(".pl-secret", ed).value; const id = val("id").value.trim();
+    if (!v) { shake($(".pl-secret", ed), 5); return; }
+    try { await api(`/api/pull/${encodeURIComponent(id)}/secret`, { method: "POST", body: { value: v } }); $(".pl-secret", ed).value = "";
+      (PULL.status[id] ||= { source: { id } }).secret_set = true; toast("토큰을 암호화해 저장했습니다"); PULL.edit.src = collect(); stPullEditor(box); }
+    catch (e) { toast(`<span class="err">${esc(errMsg(e))}</span>`, "critical"); } };
+  $('[data-x="test"]', ed).onclick = async e => {
+    const b = e.target, out = $(".pl-test", ed), src = collect(), sec = $(".pl-secret", ed)?.value;
+    b.disabled = true; out.innerHTML = `<span class="dim">조회 중…</span>`;
+    try { const r = await api("/api/pull/test", { method: "POST", body: { source: src, ...(sec ? { secret: sec } : {}) } });
+      PULL.test = !r.ok ? `<div class="c-critical">✘ ${esc(r.error)}</div>`
+        : `<div class="acc">✔ ${r.count}건 받음 (${r.ms}ms)${r.cursor != null ? ` · 커서 후보 <code>${esc(String(r.cursor))}</code>` : ""}</div>
+          ${r.count ? `<div class="st-grid2"><div><div class="st-h">받은 항목 (첫 번째)</div><pre class="pl-pre">${esc(r.items[0])}</pre></div>
+            <div><div class="st-h">변환 결과</div><pre class="pl-pre">${esc(r.parsed[0]?.error ? "✘ " + r.parsed[0].error : JSON.stringify(r.parsed[0].doc, null, 2))}</pre></div></div>` : `<div class="faint">조건에 맞는 항목이 지금은 없습니다</div>`}`;
+      out.innerHTML = PULL.test; PULL.edit.src = src;
+    } catch (x) { out.innerHTML = `<div class="c-critical">✘ ${esc(errMsg(x))}</div>`; }
+    finally { b.disabled = false; }
+  };
 }

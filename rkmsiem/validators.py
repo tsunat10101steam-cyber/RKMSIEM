@@ -76,6 +76,34 @@ def workflow(content, store):
         raise SchemaError(errs)
 
 
+def _pull_errors(s):
+    from urllib.parse import urlsplit
+    from .collectors.http_pull import ENV_PREFIX
+    o, e, sid = s.get("options") or {}, [], s["id"]
+    u = urlsplit(str(o.get("url", "")).replace("{cursor}", ""))
+    if u.scheme not in ("http", "https") or not u.hostname:
+        e.append(f"{sid}: url 은 http:// 또는 https:// 주소")
+    try:
+        if float(o.get("interval_sec", 60)) < 5:
+            e.append(f"{sid}: interval_sec 는 5초 이상")
+    except (TypeError, ValueError):
+        e.append(f"{sid}: interval_sec 는 숫자")
+    env = (o.get("auth") or {}).get("token_env") or o.get("token_env")
+    if env and not str(env).startswith(ENV_PREFIX):
+        e.append(f"{sid}: token_env 는 {ENV_PREFIX} 로 시작해야 함 (다른 비밀 값이 새지 않게)")
+    if (o.get("auth") or {}).get("type", "bearer") not in ("bearer", "basic", "header"):
+        e.append(f"{sid}: auth.type 은 bearer · basic · header")
+    for h in (o.get("headers") or {}):
+        if str(h).lower() in ("authorization", "cookie", "x-api-key"):
+            e.append(f"{sid}: 비밀 헤더 '{h}' 는 headers 에 적지 말고 auth(웹에서 암호화 저장)로")
+    fp = str((o.get("tls") or {}).get("fingerprint", "")).replace(":", "").lower()
+    if fp and not re.fullmatch(r"[0-9a-f]{64}", fp):
+        e.append(f"{sid}: tls.fingerprint 는 SHA-256 (16진수 64자)")
+    if u.scheme == "http" and (o.get("auth") or o.get("token_env")) and u.hostname not in ("127.0.0.1", "::1", "localhost"):
+        e.append(f"{sid}: 인증 정보를 http(암호화 없음)로 망에 보낼 수 없음 — https 주소를 쓰세요 (이 서버 안 127.0.0.1 은 허용)")
+    return e
+
+
 def sources(content, store):
     import re
     from .plugins import COLLECTORS, PARSERS
@@ -99,6 +127,8 @@ def sources(content, store):
                 errs.append(f"{s['id']}.extract[{i}]: pattern 없음")
         if s["type"] == "file" and not (s.get("options") or {}).get("path"):
             errs.append(f"{s['id']}: file 수집기는 options.path 필요")
+        if s["type"] == "http_pull":
+            errs += _pull_errors(s)
     if errs:
         raise SchemaError(errs)
 

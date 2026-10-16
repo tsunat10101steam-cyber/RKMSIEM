@@ -757,3 +757,19 @@ tbody tr { transform-origin: top; }
 .tp-hint { font: 12px var(--ko); margin: -2px 0 8px; }
 .tp-term .st-row select { max-width: 52%; font: 12.5px var(--mono); color: var(--text); background: var(--bg); border: 1px solid var(--line-2); border-radius: 4px; padding: 5px 6px; }
 .tp-term .st-row .btn { flex: 1; }
+
+/* 설정 → 당겨오기 */
+.pl-list { display: grid; gap: 8px; margin-bottom: 14px; }
+.pl-card { border: 1px solid var(--line-2); border-radius: 6px; padding: 10px 12px; background: var(--panel); }
+.pl-card.off { opacity: .6; }
+.pl-h { display: flex; gap: 10px; align-items: baseline; font: 13px var(--mono); }
+.pl-h .grow { flex: 1; }
+.pl-url { font: 12.5px var(--mono); margin-top: 4px; word-break: break-all; }
+.pl-st { font: 12px var(--ko); margin-top: 4px; }
+.pl-acts { margin-top: 8px; flex-wrap: wrap; }
+.pl-form { border: 1px solid var(--accent); border-radius: 8px; padding: 12px 14px; margin-top: 12px; background: color-mix(in srgb, var(--accent) 4%, var(--panel)); }
+.pl-form textarea { width: 100%; font: 12.5px var(--mono); color: var(--text); background: var(--bg); border: 1px solid var(--line-2); border-radius: 4px; padding: 6px 8px; resize: vertical; }
+.pl-btns { margin-top: 10px; } .pl-btns .grow { flex: 1; }
+.pl-test { margin-top: 10px; font: 12.5px var(--ko); }
+.pl-pre { max-height: 260px; overflow: auto; font: 11.5px/1.5 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 8px; white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; }
+.pl-now { align-self: end; }

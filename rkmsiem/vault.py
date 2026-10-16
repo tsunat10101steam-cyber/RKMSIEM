@@ -7,6 +7,7 @@
 """
 import base64
 import logging
+import re
 import os
 import time
 
@@ -67,8 +68,12 @@ class Vault:
         env_name = NAMES.get(name, (None,))[0]
         return self.env.get(env_name) if env_name else None
 
+    @staticmethod
+    def _known(name):
+        return name in NAMES or bool(re.fullmatch(r"pull:[a-z][a-z0-9_-]{0,63}", name or ""))
+
     def set(self, name, value, actor):
-        if name not in NAMES:
+        if not self._known(name):
             raise VaultError(f"알 수 없는 항목: {name}")
         if not self._f:
             raise VaultError(self.error or "암호화를 쓸 수 없습니다")
@@ -93,7 +98,7 @@ class Vault:
         return self._f.decrypt(token.encode()).decode()
 
     def clear(self, name, actor):
-        if name not in NAMES:
+        if not self._known(name):
             raise VaultError(f"알 수 없는 항목: {name}")
         n = self.db.execute("DELETE FROM secrets WHERE name=?", (name,)).rowcount
         if self.audit and n:

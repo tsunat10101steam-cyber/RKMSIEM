@@ -1,0 +1,29 @@
+id: external_alert
+name: 외부 시스템 경보
+description: >
+  당겨오기(Prometheus 경보 · Kubernetes 경고 이벤트 등)로 가져온 외부 경보를 시스템·경보 이름·대상별로 묶는다.
+  1시간 안에 10번 넘게 반복되면 한 단계 올리고, 외부 심각도가 critical 이면 올리고 info 면 내린다.
+enabled: true
+type: threshold
+where:
+  - {field: event.action, op: eq, value: external_alert}
+group_by: [observer.product, rule.name, host.name]
+window_sec: 3600
+levels:
+  - id: EXTERNAL_ALERT
+    min: 1
+    severity: medium
+    title: 외부 시스템 경보
+  - id: EXTERNAL_ALERT_REPEAT
+    min: 10
+    severity: high
+    title: 외부 시스템 경보 (반복)
+modifiers:
+  - when: [{field: labels.severity, op: in, value: [critical, error, page]}]
+    severity_delta: 1
+    note: "외부 심각도 높음"
+  - when: [{field: labels.severity, op: in, value: [info, none, normal]}]
+    severity_delta: -1
+    note: "외부 심각도 낮음"
+incident_key: [observer.product, rule.name]
+tags: [external, pull]
