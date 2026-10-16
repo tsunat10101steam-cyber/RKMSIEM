@@ -3,6 +3,8 @@
 #   sudo ./deploy/addon.sh list                (탭 구분: id · 상태 · 이름 · 설명)
 #   sudo ./deploy/addon.sh install <id>
 #   sudo ./deploy/addon.sh uninstall <id>
+#   sudo ./deploy/addon.sh configure <id>     추가 기능의 설정 화면 (addon.conf 의 CONFIGURE)
+#   sudo ./deploy/addon.sh status <id>        상태 확인 (addon.conf 의 STATUS)
 #
 # 추가 기능 = deploy/addons/<id>/ (addon.conf · install.sh · uninstall.sh). 핵심과는 API 로만 이야기한다:
 #   설치할 때 핵심이 그 추가 기능 전용 API 토큰(addon-<id>, addon.conf 의 SCOPES 만)을 만들어
@@ -19,7 +21,7 @@ rk_cli() {     # 서비스와 같은 계정·환경으로 python -m rkmsiem …
 }
 load() {
 	[[ "$1" =~ ^[a-z][a-z0-9-]{0,31}$ ]] && [ -f "$ADDONS/$1/addon.conf" ] || { echo "추가 기능 '$1' 이 없습니다" >&2; exit 2; }
-	ID=""; NAME=""; DESC=""; VERSION=""; AVAILABLE=0; SCOPES=""; SERVICE=""
+	ID=""; NAME=""; DESC=""; VERSION=""; AVAILABLE=0; SCOPES=""; SERVICE=""; CONFIGURE=""; STATUS=""
 	# shellcheck disable=SC1090
 	. "$ADDONS/$1/addon.conf"
 }
@@ -64,5 +66,12 @@ uninstall)
 	rk_cli addon-token revoke "$AID"
 	rm -rf "${STATE:?}/$AID"
 	echo "$NAME 을(를) 제거했습니다 (핵심 기능은 그대로)" ;;
-*) sed -n '2,10p' "$0"; exit 2 ;;
+configure|status)
+	[ "$(id -u)" -eq 0 ] || { echo "sudo 로 실행하세요" >&2; exit 1; }
+	load "$AID"
+	[ -f "$STATE/$AID/installed" ] || { echo "$NAME 은(는) 설치되어 있지 않습니다" >&2; exit 2; }
+	S="$CONFIGURE"; [ "$CMD" = status ] && S="$STATUS"
+	[ -n "$S" ] && [ -x "$ADDONS/$AID/$S" ] || { echo "$NAME 에는 이 기능이 없습니다" >&2; exit 2; }
+	exec "$ADDONS/$AID/$S" ;;
+*) sed -n '2,12p' "$0"; exit 2 ;;
 esac

@@ -1,0 +1,25 @@
+# Slack 앱 만들기: https://api.slack.com/apps → Create New App → From an app manifest → 워크스페이스 고르기 → 아래를 붙여 넣기
+display_information:
+  name: HSOAR
+  description: RKMSIEM 자동 대응 — 경보·승인·차단을 Slack 에서
+  background_color: "#0d1117"
+features:
+  bot_user:
+    display_name: hsoar
+    always_online: true
+  slash_commands:
+    - command: /hsoar
+      description: RKMSIEM 상태·사건·차단·자동 모드
+      usage_hint: status | incidents | block <IP> [1h|1d|7d|forever] <사유> | unblock <IP> <사유> | pause | resume | auto off|dry|on
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - commands
+settings:
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

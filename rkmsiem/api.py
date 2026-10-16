@@ -744,7 +744,10 @@ def create_app(platform):
     def decision(rid, sid):
         b = body({"type": "object", "required": ["approve", "reason"], "properties": {"approve": {"type": "boolean"},
                                                                                      "reason": {"type": "string", "minLength": 1, "maxLength": 2000}}})
-        p.soar.decide(rid, sid, actor(), g.user["role"], b["approve"], b["reason"])
+        if g.user.get("kind") == "local":
+            raise ApiError(403, "forbidden", "점검 키로는 승인할 수 없습니다")
+        # 추가 기능 토큰(runs:approve)은 역할 대신 토큰 권한으로 — 누가 눌렀는지는 추가 기능이 사유에 남김 (예: Slack @이름)
+        p.soar.decide(rid, sid, actor(), None if g.user.get("kind") == "token" else g.user["role"], b["approve"], b["reason"])
         return jsonify(p.soar.detail(rid))
 
     @app.post("/api/runs/<int:rid>/steps/<sid>/task")

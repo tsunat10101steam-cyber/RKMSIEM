@@ -1,0 +1,27 @@
+[Unit]
+Description=HSOAR — RKMSIEM 을 Slack 으로 (추가 기능)
+After=network-online.target rkmsiem.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rkmsiem-hsoar
+Group=rkmsiem-hsoar
+Environment=ADDON_DIR=/etc/rkmsiem/addons/hsoar
+Environment=HSOAR_STATE=/var/lib/rkmsiem-hsoar
+Environment=PYTHONPATH=/opt/rkmsiem-hsoar
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/rkmsiem-hsoar/venv/bin/python -m hsoar
+Restart=always
+RestartSec=5
+# Slack(https 나가기)과 RKMSIEM API(127.0.0.1) 만 — 이 서버의 다른 것은 건드리지 않음
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/rkmsiem-hsoar
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

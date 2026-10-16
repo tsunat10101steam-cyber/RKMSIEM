@@ -393,11 +393,22 @@ do_addons() {
 		case "$st" in
 			"준비 중") msg "$name" "$desc\n\n아직 준비 중입니다 — 다음 업데이트에서 설치할 수 있게 됩니다." ;;
 			"설치됨")
-				ask_no "$name" "$desc\n\n설치되어 있습니다. 제거할까요?\n(전용 토큰이 폐기되고, 핵심은 수동 운영으로 그대로)" "제거" "취소" || continue
-				if "$SRC/deploy/addon.sh" uninstall "$id" > "$log" 2>&1; then showfile "$name 제거" "$log"; else show_failure "$name 제거" "$log"; fi ;;
+				local what
+				what="$(whiptail --title "$name" --ok-button "선택" --cancel-button "뒤로" --menu "$desc" "$H" "$W" 4 \
+					c "설정" s "상태 확인" u "업데이트 (같은 토큰 다시 발급 · 프로그램 다시 설치)" r "제거" 3>&1 1>&2 2>&3)" || continue
+				case "$what" in
+					c) "$SRC/deploy/addon.sh" configure "$id" || msg "$name" "설정 화면이 없거나 실패했습니다" ;;
+					s) "$SRC/deploy/addon.sh" status "$id" > "$log" 2>&1; showfile "$name 상태" "$log" ;;
+					u) if "$SRC/deploy/addon.sh" install "$id" > "$log" 2>&1; then showfile "$name 업데이트" "$log"; else show_failure "$name 업데이트" "$log"; fi ;;
+					r) ask_no "$name" "제거할까요?\n(전용 토큰이 폐기되고, 핵심은 수동 운영으로 그대로)" "제거" "취소" || continue
+					   if "$SRC/deploy/addon.sh" uninstall "$id" > "$log" 2>&1; then showfile "$name 제거" "$log"; else show_failure "$name 제거" "$log"; fi ;;
+				esac ;;
 			*)
 				ask "$name" "$desc\n\n설치할까요?" "설치" "취소" || continue
-				if "$SRC/deploy/addon.sh" install "$id" > "$log" 2>&1; then showfile "$name 설치" "$log"; else show_failure "$name 설치" "$log"; fi ;;
+				if "$SRC/deploy/addon.sh" install "$id" > "$log" 2>&1; then
+					showfile "$name 설치" "$log"
+					ask "$name" "이어서 설정할까요? (Slack 토큰·채널 등)" "설정" "나중에" && "$SRC/deploy/addon.sh" configure "$id"
+				else show_failure "$name 설치" "$log"; fi ;;
 		esac
 	done
 }

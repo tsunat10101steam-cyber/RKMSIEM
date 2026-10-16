@@ -62,8 +62,6 @@ GET /api/feed?after=1234&types=incident,run&limit=200
 종류: `alert` · `incident` · `run`(승인 대기·사람 할 일 포함 상태 변화) · `notification` · `blocklist` · `agents`.
 추가 기능은 처리한 마지막 `seq` 를 자기 쪽에 저장해 두고 다음 요청의 `after` 로 넘기면 된다.
 
-## HSOAR (준비 중)
+## HSOAR
 
-Slack 으로 관리하는 자동 대응 — Socket Mode(서버가 Slack 으로 나가는 연결만, 공개 주소 불필요)로
-경보·승인 요청·사람 할 일을 Slack 에 올리고 버튼으로 처리, `/hsoar` 명령, 자동 승인 등급(자동 · Slack 승인 · 금지)과 킬 스위치.
-위 피드와 토큰 권한만으로 동작하도록 만든다.
+Slack 으로 관리하는 자동 대응 — [docs/HSOAR.md](HSOAR.md). 위 피드와 전용 토큰만으로 동작한다.

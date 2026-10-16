@@ -356,7 +356,7 @@ class PlaybookEngine:
 
     def decide(self, run_id, step_id, actor, actor_role, approve, reason):
         policy = self.config.get("approval") or {}
-        if actor_role not in policy.get("approver_roles", []):
+        if actor_role is not None and actor_role not in policy.get("approver_roles", []):     # None = runs:approve 토큰 (추가 기능)
             raise ApprovalError(f"역할 '{actor_role}' 은 승인할 수 없습니다")
         run = self.db.one("SELECT * FROM playbook_runs WHERE id=?", (run_id,))
         if not run:

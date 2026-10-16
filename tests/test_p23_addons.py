@@ -107,12 +107,14 @@ def test_addon_token_cli_rotates(ctx, tmp_path, config_dir):
     assert run("revoke", "hsoar").returncode == 0 and auth.resolve(t2) is None
 
 
-def test_addon_sh_lists_hsoar_as_coming():
+def test_addon_sh_lists_hsoar():
     out = subprocess.run(["bash", os.path.join(ROOT, "deploy", "addon.sh"), "list"], capture_output=True, text=True).stdout
     row = [l.split("\t") for l in out.splitlines() if l.startswith("hsoar\t")][0]
-    assert row[1] == "준비 중" and row[2] == "HSOAR"
-    if os.geteuid() == 0:
-        r = subprocess.run(["bash", os.path.join(ROOT, "deploy", "addon.sh"), "install", "hsoar"], capture_output=True, text=True)
-        assert r.returncode == 3 and "준비 중" in r.stderr
+    assert row[2] == "HSOAR" and row[1] in ("설치 안 됨", "설치됨")
+    d = os.path.join(ROOT, "deploy", "addons", "hsoar")
+    for f in ("install.sh", "uninstall.sh", "configure.sh", "status.sh"):
+        assert os.access(os.path.join(d, f), os.X_OK), f
+    conf = open(os.path.join(d, "addon.conf"), encoding="utf-8").read()
+    assert "AVAILABLE=1" in conf and "config:write" not in conf and "users:write" not in conf          # 전용 토큰은 정해진 권한만
     tui = open(os.path.join(ROOT, "deploy", "setup-tui.sh"), encoding="utf-8").read()
-    assert "do_addons" in tui and '6 "추가 기능 (HSOAR 등)"' in tui
+    assert "do_addons" in tui and '6 "추가 기능 (HSOAR 등)"' in tui and 'addon.sh" configure' in tui
