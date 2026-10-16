@@ -142,6 +142,9 @@ def create_app(platform):
             f"connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:; frame-src 'self' {_cx_frame()}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         if request.path.startswith("/api/"):
             resp.headers["Cache-Control"] = "no-store"
+        elif request.path == "/" or request.path.startswith("/static/"):
+            # 업데이트 뒤에도 브라우저가 예전 app.js 를 쓰지 않게 — 매번 확인(바뀌지 않았으면 304)
+            resp.headers["Cache-Control"] = "no-cache"
         return resp
 
     MUST_CHANGE_OK = {"/api/me", "/api/me/password", "/api/auth/logout"}     # 비밀번호를 바꾸기 전에 쓸 수 있는 것

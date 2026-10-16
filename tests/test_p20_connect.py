@@ -239,3 +239,11 @@ def test_tls_has_separate_connect_origin():
     tui = open(os.path.join(ROOT, "deploy", "setup-tui.sh"), encoding="utf-8").read()
     assert "8445" in tui
     assert not os.path.exists(os.path.join(ROOT, "deploy", "grafana-embed.sh"))
+
+
+def test_console_files_revalidate_after_update(ctx):
+    p, c, auth = ctx
+    for path in ("/", "/static/app.js", "/static/settings.js"):
+        assert c.get(path).headers.get("Cache-Control") == "no-cache", path
+    js = c.get("/static/app.js").get_data(as_text=True)
+    assert '"grafana"' not in js and 'panel("connect"' in js
