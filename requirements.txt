@@ -6,3 +6,4 @@ pytest>=8         # 테스트
 tzdata>=2024.1    # 시간대 DB (시스템 zoneinfo 가 없는 최소 설치·컨테이너 대비)
 reportlab>=4.0     # PDF 보고서 (사건·기간 요약) — 한글 폰트는 apt fonts-nanum
 cryptography>=42   # 웹에서 입력한 SMTP 비밀번호·API 키 암호화 저장 (Fernet)
+waitress>=3.0      # 운영 WSGI 서버 · 테스트(에이전트·HSOAR 가 실제 API 서버에 붙음)
