@@ -7,7 +7,8 @@ options:
   interval_sec   조회 간격 (기본 60, 최소 5)
   timeout_sec    응답 대기 (기본 15)
   headers        추가 헤더 (비밀 값은 넣지 말 것 — 아래 auth)
-  auth           {type: bearer|basic|header, user: (basic), header: (header 이름)}
+  auth           {type: bearer|basic|header|proxy, user: (basic·proxy), header: (header·proxy 이름)}
+                 proxy: 비밀 값 없이 '로그인 헤더'(예: X-WEBAUTH-USER: rkmsiem-collector) — 제품이 RKMSIEM 서버 IP 만 믿을 때 (auth proxy)
                  비밀 값: 웹 설정에서 넣으면 암호화 저장(vault 'pull:<id>'), 또는 token_env: RKMSIEM_PULL_* 환경 변수
   tls            {verify: true, ca_file: 경로, fingerprint: SHA-256 지문(자체 서명 인증서 고정)}
   items_path     응답에서 목록 위치 (예: data.alerts · items). 비우면 응답 전체(배열/객체/NDJSON)
@@ -69,7 +70,9 @@ def fetch(opt, secret=None, url=None):
     headers = {"Accept": "application/json", "User-Agent": "rkmsiem-pull/1"}
     headers.update({str(k): str(v) for k, v in (opt.get("headers") or {}).items()})
     auth = opt.get("auth") or {}
-    if secret:
+    if auth.get("type") == "proxy":                    # 비밀 값 없음 — 제품의 auth proxy 화이트리스트가 보호
+        headers[auth.get("header") or "X-WEBAUTH-USER"] = auth.get("user") or "rkmsiem-collector"
+    elif secret:
         t = auth.get("type", "bearer")
         if t == "basic":
             headers["Authorization"] = "Basic " + base64.b64encode(f"{auth.get('user', '')}:{secret}".encode()).decode()

@@ -39,7 +39,9 @@ VMware NAT 포트 포워딩을 쓰면 **8445 도 추가**하고, 브라우저가
 ## 예: Grafana
 
 1. 당겨오기 → **Grafana** 프리셋
-2. 데이터 (경보): Grafana → Administration → Service accounts → Viewer 계정 → 토큰(`glsa_…`)을 토큰 칸에 → 지금 시험
+2. 데이터 (경보): 인증 **로그인 헤더**(기본) — 토큰 없이 `X-WEBAUTH-USER: rkmsiem-collector` 로 가져옴 (Grafana whitelist 가 보호, http 가능).
+   주소 `http://<Grafana>:3000/connect/grafana/api/prometheus/grafana/api/v1/alerts` → 지금 시험.
+   토큰을 쓰려면 인증을 Bearer 로 바꾸고 Service account(Viewer) 토큰 — 이때는 https 주소만
 3. 화면: Grafana 설정 (grafana.ini 또는 도커 환경 변수)
    ```ini
    [server]

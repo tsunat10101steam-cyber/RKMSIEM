@@ -516,8 +516,9 @@ const PULL_PRESETS = {
       field_map: { "@timestamp": "activeAt", "rule.name": "labels.alertname", "host.name": "labels.instance", "labels.severity": "labels.severity", "message": "annotations.summary" },
       static: { "event.action": "external_alert", "event.category": "metric", "observer.product": "prometheus" } },
       view: { url: "http://127.0.0.1:9090", home: "/alerts", kind: "prometheus", title: "Prometheus" } } },
-  grafana: { label: "Grafana", note: "데이터: Grafana 경보 규칙의 지금 울리는 경보 — Administration → Service accounts 에서 Viewer 토큰을 만들어 아래 토큰 칸에. 화면: Grafana 설정(grafana.ini [server]·[security]·[auth.proxy] 또는 GF_ 환경 변수)에 root_url = https://<서버>:8445/connect/grafana/ · serve_from_sub_path = true · allow_embedding = true · auth.proxy enabled = true, header_name = X-WEBAUTH-USER, headers = Role:X-WEBAUTH-ROLE, auto_sign_up = true, whitelist = <RKMSIEM 서버 IP> — 그러면 RKMSIEM 로그인으로 들어갑니다 (docs/CONNECT.md).",
-    src: { id: "grafana", dataset: "pull.grafana", options: { url: "http://127.0.0.1:3000/api/prometheus/grafana/api/v1/alerts", interval_sec: 60, auth: { type: "bearer" },
+  grafana: { label: "Grafana", note: "데이터: Grafana 경보 규칙의 지금 울리는 경보 — 화면과 같은 로그인 헤더로 가져옵니다(토큰 없음, Grafana 의 whitelist 가 보호). 토큰을 쓰려면 인증을 Bearer 로 바꾸고 Service account(Viewer) 토큰 — 이때 주소는 https. 화면: Grafana 설정(grafana.ini [server]·[security]·[auth.proxy] 또는 GF_ 환경 변수)에 root_url = https://<서버>:8445/connect/grafana/ · serve_from_sub_path = true · allow_embedding = true · auth.proxy enabled = true, header_name = X-WEBAUTH-USER, headers = Role:X-WEBAUTH-ROLE, auto_sign_up = true, whitelist = <RKMSIEM 서버 IP> — 그러면 RKMSIEM 로그인으로 들어갑니다 (docs/CONNECT.md).",
+    src: { id: "grafana", dataset: "pull.grafana", options: { url: "http://127.0.0.1:3000/connect/grafana/api/prometheus/grafana/api/v1/alerts", interval_sec: 60,
+      auth: { type: "proxy", header: "X-WEBAUTH-USER", user: "rkmsiem-collector" },
       items_path: "data.alerts", only_if: { state: ["Alerting", "alerting", "firing"] }, id_fields: ["labels.__alert_rule_uid__", "labels.alertname", "labels.instance", "activeAt"],
       field_map: { "@timestamp": "activeAt", "rule.name": "labels.alertname", "host.name": "labels.instance", "labels.severity": "labels.severity", "message": "annotations.summary",
         "labels.folder": "labels.grafana_folder" },
@@ -587,10 +588,10 @@ function stPullEditor(box) {
       <label>데이터셋 <span class="faint">(검색·규칙용 이름)</span><input data-f="dataset" value="${esc(s.dataset || "")}"></label>
       <label>조회 간격(초)<input data-f="interval_sec" inputmode="numeric" value="${esc(o.interval_sec || 60)}"></label></div>
     <label>주소 <span class="faint">({cursor} 자리에 커서 값 · 인증을 쓰면 https 만 — 이 서버 안 127.0.0.1 은 http 가능)</span><input data-f="url" value="${esc(o.url || "")}"></label>
-    <div class="st-f3"><label>인증<select data-f="auth_type">${[["", "없음"], ["bearer", "Bearer 토큰"], ["basic", "Basic (계정·비밀번호)"], ["header", "헤더에 키"]]
+    <div class="st-f3"><label>인증<select data-f="auth_type">${[["", "없음"], ["bearer", "Bearer 토큰"], ["basic", "Basic (계정·비밀번호)"], ["header", "헤더에 키"], ["proxy", "로그인 헤더 (토큰 없음 · auth proxy)"]]
         .map(([v, l]) => `<option value="${v}" ${(a ? a.type || "bearer" : "") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-      <label class="pl-auser">${a?.type === "header" ? "헤더 이름" : "계정"}<input data-f="auth_extra" value="${esc(a?.type === "header" ? a.header || "X-API-Key" : a?.user || "")}" ${a && (a.type === "basic" || a.type === "header") ? "" : "disabled"}></label>
-      <label>토큰·비밀번호 <span class="faint">${(PULL.status[s.id] || {}).secret_set ? "· <span class='acc'>저장됨</span>" : ""}</span><div class="st-row"><input type="password" class="pl-secret" autocomplete="new-password" placeholder="${a ? "입력 후 '토큰 저장'" : "인증 없음"}" ${a ? "" : "disabled"}><button class="btn" data-x="secret" ${a ? "" : "disabled"}>토큰 저장</button></div></label></div>
+      <label class="pl-auser">${a?.type === "header" ? "헤더 이름" : a?.type === "proxy" ? "헤더: 계정 <span class='faint'>(제품이 이 서버 IP 만 믿을 때)</span>" : "계정"}<input data-f="auth_extra" value="${esc(a?.type === "header" ? a.header || "X-API-Key" : a?.type === "proxy" ? `${a.header || "X-WEBAUTH-USER"}: ${a.user || "rkmsiem-collector"}` : a?.user || "")}" ${a && ["basic", "header", "proxy"].includes(a.type) ? "" : "disabled"}></label>
+      <label>토큰·비밀번호 <span class="faint">${(PULL.status[s.id] || {}).secret_set ? "· <span class='acc'>저장됨</span>" : ""}</span><div class="st-row"><input type="password" class="pl-secret" autocomplete="new-password" placeholder="${a?.type === "proxy" ? "필요 없음 (로그인 헤더)" : a ? "입력 후 '토큰 저장'" : "인증 없음"}" ${a && a.type !== "proxy" ? "" : "disabled"}><button class="btn" data-x="secret" ${a && a.type !== "proxy" ? "" : "disabled"}>토큰 저장</button></div></label></div>
     <div class="st-f3"><label>인증서 지문 <span class="faint">(자체 서명이면 SHA-256)</span><input data-f="fingerprint" value="${esc(tls.fingerprint || "")}" placeholder="AB:CD:…"></label>
       <label>목록 위치 <span class="faint">(예: data.alerts · items)</span><input data-f="items_path" value="${esc(o.items_path || "")}"></label>
       <label>같은 항목 구별 <span class="faint">(쉼표)</span><input data-f="id_fields" value="${esc((o.id_fields || []).join(", "))}"></label></div>
@@ -621,7 +622,8 @@ function stPullEditor(box) {
     src.id = val("id").value.trim(); src.dataset = val("dataset").value.trim() || undefined; if (!src.dataset) delete src.dataset;
     op.url = val("url").value.trim(); op.interval_sec = +val("interval_sec").value || 60;
     const at = val("auth_type").value, ex = val("auth_extra").value.trim();
-    if (at) { op.auth = { ...(op.auth?.token_env ? { token_env: op.auth.token_env } : {}), type: at, ...(at === "basic" ? { user: ex } : at === "header" ? { header: ex || "X-API-Key" } : {}) }; } else delete op.auth;
+    if (at) { op.auth = { ...(op.auth?.token_env ? { token_env: op.auth.token_env } : {}), type: at, ...(at === "basic" ? { user: ex } : at === "header" ? { header: ex || "X-API-Key" }
+      : at === "proxy" ? (([h, u]) => ({ header: (h || "").trim() || "X-WEBAUTH-USER", user: (u || "").trim() || "rkmsiem-collector" }))(ex.includes(":") ? ex.split(":") : ["", ex]) : {}) }; } else delete op.auth;
     const fp = val("fingerprint").value.trim(); fp ? (op.tls = { ...(op.tls || {}), fingerprint: fp }) : (op.tls && delete op.tls.fingerprint, op.tls && !Object.keys(op.tls).length && delete op.tls);
     const set = (k, v) => { v === "" || v == null || (Array.isArray(v) && !v.length) || (typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) ? delete op[k] : op[k] = v; };
     set("items_path", val("items_path").value.trim()); set("id_fields", val("id_fields").value.split(",").map(x => x.trim()).filter(Boolean));

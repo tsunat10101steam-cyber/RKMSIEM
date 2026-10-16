@@ -35,7 +35,7 @@ class Api(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        Api.seen.append((self.path, self.headers.get("Authorization")))
+        Api.seen.append((self.path, self.headers.get("Authorization"), self.headers.get("X-WEBAUTH-USER")))
         u = urlsplit(self.path)
         q = parse_qs(u.query)
         if self.headers.get("Authorization") != f"Bearer {TOKEN}":
@@ -125,8 +125,8 @@ def test_pull_cursor_pages_and_auth(plat, api_server):
     assert json.loads(p.db.scalar("SELECT value FROM collector_state WHERE source_id='ev'")) == EVENTS[-1]["ts"]   # 저장 후 커서 이동
     Api.seen = []
     c.poll()
-    assert any("since=1760000070" in path for path, _ in Api.seen)               # 다음엔 커서 이후만
-    assert all(auth == f"Bearer {TOKEN}" for _, auth in Api.seen)
+    assert any("since=1760000070" in path for path, _, _ in Api.seen)               # 다음엔 커서 이후만
+    assert all(auth == f"Bearer {TOKEN}" for _, auth, _ in Api.seen)
 
 
 def test_pull_errors_are_clear(api_server, monkeypatch):
@@ -191,4 +191,21 @@ def test_pull_grafana_alerts_preset(plat, api_server):
     assert doc["observer"]["product"] == "grafana" and doc["labels"]["folder"] == "infra"
     assert p.db.all("SELECT 1 FROM alerts WHERE rule_id='external_alert'")
     preset = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "settings.js"), encoding="utf-8").read()
-    assert "/api/prometheus/grafana/api/v1/alerts" in preset and '"labels.__alert_rule_uid__"' in preset
+    assert "/connect/grafana/api/prometheus/grafana/api/v1/alerts" in preset and '"labels.__alert_rule_uid__"' in preset
+
+
+def test_pull_proxy_header_auth_over_http(plat, api_server):
+    """로그인 헤더(auth proxy) 인증: 비밀 값이 없으므로 다른 서버의 http 도 허용, 헤더를 실제로 보냄."""
+    p = plat
+    from rkmsiem.schemas import SchemaError
+    src = {"id": "gfh", "type": "http_pull", "parser": "json", "options": {"url": "http://10.9.9.9:3000/api/x", "items_path": "data.alerts",
+           "auth": {"type": "proxy", "header": "X-WEBAUTH-USER", "user": "rkmsiem-collector"}}}
+    cur = p.config.get("sources")
+    p.config.put("sources", "default", dict(cur, sources=cur["sources"] + [src]), "t", "pull")            # http 허용
+    for bad in ({"type": "proxy", "header": "Authorization"}, {"type": "proxy", "user": "a b"}, {"type": "bearer"}):
+        with pytest.raises(SchemaError):
+            p.config.put("sources", "default", dict(cur, sources=cur["sources"] + [dict(src, options=dict(src["options"], auth=bad))]), "t", "pull")
+    from rkmsiem.collectors.http_pull import fetch
+    Api.seen = []
+    fetch({"url": api_server + "/whoami", "auth": {"type": "proxy", "header": "X-WEBAUTH-USER", "user": "rkmsiem-collector"}})
+    assert Api.seen[-1][2] == "rkmsiem-collector"

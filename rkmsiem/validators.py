@@ -91,15 +91,23 @@ def _pull_errors(s):
     env = (o.get("auth") or {}).get("token_env") or o.get("token_env")
     if env and not str(env).startswith(ENV_PREFIX):
         e.append(f"{sid}: token_env 는 {ENV_PREFIX} 로 시작해야 함 (다른 비밀 값이 새지 않게)")
-    if (o.get("auth") or {}).get("type", "bearer") not in ("bearer", "basic", "header"):
-        e.append(f"{sid}: auth.type 은 bearer · basic · header")
+    a = o.get("auth") or {}
+    if a.get("type", "bearer") not in ("bearer", "basic", "header", "proxy"):
+        e.append(f"{sid}: auth.type 은 bearer · basic · header · proxy")
+    if a.get("type") == "proxy":
+        h, usr = str(a.get("header") or "X-WEBAUTH-USER"), str(a.get("user") or "rkmsiem-collector")
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", h) or h.lower() in ("authorization", "cookie", "host") or h.lower().startswith(("x-forwarded-", "x-rkmsiem-")):
+            e.append(f"{sid}: auth.header 로 쓸 수 없는 헤더 '{h}'")
+        if not re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", usr):
+            e.append(f"{sid}: auth.user 는 영문·숫자·._@- 64자 이하")
     for h in (o.get("headers") or {}):
         if str(h).lower() in ("authorization", "cookie", "x-api-key"):
             e.append(f"{sid}: 비밀 헤더 '{h}' 는 headers 에 적지 말고 auth(웹에서 암호화 저장)로")
     fp = str((o.get("tls") or {}).get("fingerprint", "")).replace(":", "").lower()
     if fp and not re.fullmatch(r"[0-9a-f]{64}", fp):
         e.append(f"{sid}: tls.fingerprint 는 SHA-256 (16진수 64자)")
-    if u.scheme == "http" and (o.get("auth") or o.get("token_env")) and u.hostname not in ("127.0.0.1", "::1", "localhost"):
+    secret_auth = (o.get("auth") and a.get("type") != "proxy") or o.get("token_env") or a.get("token_env")
+    if u.scheme == "http" and secret_auth and u.hostname not in ("127.0.0.1", "::1", "localhost"):
         e.append(f"{sid}: 인증 정보를 http(암호화 없음)로 망에 보낼 수 없음 — https 주소를 쓰세요 (이 서버 안 127.0.0.1 은 허용)")
     return e
 
