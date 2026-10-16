@@ -107,6 +107,28 @@ def test_cards_suggestions_and_buttons_dry(env):
     assert "✔ 계정 잠금 `backup`" in r
 
 
+def test_slack_post_error_does_not_crash_poll(env):
+    """Slack 전송이 실패해도(not_in_channel 등) 서비스가 죽지 않고 피드 위치는 넘어감."""
+    from hsoar.core import slack_hint
+
+    class BadResp(dict):
+        pass
+
+    class Boom(Exception):
+        def __init__(self):
+            self.response = BadResp(ok=False, error="not_in_channel")
+
+    p, c, chat, make = env
+    eng = make()
+    eng.poll(wait=0)
+    chat.post = lambda *a, **k: (_ for _ in ()).throw(Boom())   # 모든 전송 실패
+    attack(c)
+    seq_before = eng.store["seq"]
+    eng.poll(wait=0)                                            # 예외가 올라오면 안 됨
+    assert eng.store["seq"] > seq_before                        # 그래도 피드 위치는 진행
+    assert slack_hint(Boom()) == "not_in_channel (봇이 채널에 없음 — 알림 채널에서 /invite @hsoar)"
+
+
 def test_auto_on_cap_and_kill_switch(env):
     p, c, chat, make = env
     policy = json.loads(json.dumps(pol.DEFAULT))

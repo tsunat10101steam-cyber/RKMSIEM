@@ -13,6 +13,23 @@ from . import policy as pol
 from .rk import RKError
 
 log = logging.getLogger("hsoar")
+SLACK_HINTS = {
+    "not_in_channel": "봇이 채널에 없음 — 알림 채널에서 /invite @hsoar",
+    "channel_not_found": "채널 ID 가 틀림 — 설정의 SLACK_CHANNEL 확인",
+    "is_archived": "보관된 채널 — 다른 채널로 바꾸거나 보관 해제",
+    "missing_scope": "봇 권한 부족 — 앱을 manifest 로 다시 설치",
+}
+
+
+def slack_hint(e):
+    """SlackApiError → 'not_in_channel (봇이 채널에 없음 …)'. Slack 과 무관한 오류는 그대로."""
+    r = getattr(e, "response", None)
+    code = r.get("error") if r is not None and hasattr(r, "get") else None
+    if not code:
+        return str(e)
+    return f"{code} ({SLACK_HINTS[code]})" if code in SLACK_HINTS else code
+
+
 SEV_KO = {"low": "낮음", "medium": "주의", "high": "높음", "critical": "긴급"}
 SEV_ICON = {"low": "⚪", "medium": "🟡", "high": "🟠", "critical": "🔴"}
 DUR = {"1h": 3600, "1d": 86400, "7d": 604800, "forever": None}
@@ -58,6 +75,8 @@ class Engine:
                 self.handle(ev["type"], ev["data"])
             except RKError as e:
                 log.warning("이벤트 #%s 처리 실패: %s", ev["seq"], e)
+            except Exception as e:                              # noqa: BLE001  Slack 전송 오류 등 — 한 이벤트 때문에 서비스가 죽지 않게
+                log.error("이벤트 #%s 건너뜀 — %s", ev["seq"], slack_hint(e))
             self.store["seq"] = ev["seq"]
         if r["items"]:
             self.store.save()
