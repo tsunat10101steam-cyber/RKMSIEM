@@ -800,6 +800,22 @@ panel("team", "21", "담당자", "TEAM", ["team", "users", "담당자"], "담당
   (el, live) => renderTeam(el, live), { liveSkip: true, noOverview: true });
 panel("topology", "22", "네트워크 토폴로지", "TOPOLOGY", ["topology", "topo", "network", "토폴로지", "네트워크"], "감지한 기기를 끌어다 놓고 와이어로 연결 · 경보·차단 상태 겹쳐 보기 (web/topology.js)", 12,
   (el, live) => renderTopology(el, live), { liveSkip: true, noOverview: true });
+panel("grafana", "23", "Grafana", "GRAFANA", ["grafana", "gf", "그라파나"], "Grafana 대시보드를 콘솔 안에서 — RKMSIEM 로그인 그대로 (grafana <이름|uid>)", 12, async (el, live, arg) => {
+  const cfg = await api("/api/grafana");
+  if (!cfg.enabled) {
+    el.innerHTML = `<div class="msg c-high">Grafana 임베드가 꺼져 있습니다.</div>
+      <div class="hint">서버에서 한 번: <code>sudo /opt/rkmsiem/deploy/grafana-embed.sh --upstream http://127.0.0.1:3000</code><br>
+      Grafana 가 이 서버의 <b>https://…:8443/grafana/</b> 로 붙고 RKMSIEM 로그인으로 들어갑니다 (자세한 내용: docs/GRAFANA.md).</div>`;
+    return;
+  }
+  const want = String(arg || "").trim(), ds = cfg.dashboards;
+  const pick = ds.find(d => d.name === want || d.uid === want) || (want && /^[\w-]{1,64}$/.test(want) ? { name: want, uid: want } : ds[0]);
+  const src = pick ? `${cfg.path}d/${encodeURIComponent(pick.uid)}/?orgId=1&kiosk&theme=${encodeURIComponent(cfg.theme)}` : `${cfg.path}?kiosk&theme=${encodeURIComponent(cfg.theme)}`;
+  await api("/api/grafana/session", { method: "POST" });          // /grafana/ 전용 쿠키 (iframe 은 토큰 헤더를 못 보냄)
+  el.innerHTML = `<div class="meta-line"><span>대시보드 ${ds.map(d => `<span class="link${d === pick ? " acc" : ""}" data-cmd="grafana ${esc(d.name)}">${esc(d.title || d.name)}</span>`).join(" · ") || "-"}</span>
+      <span><a class="link" href="${esc(src.replace(/[?&]kiosk/, ""))}" target="_blank" rel="noopener">↗ 새 창으로</a></span><span class="dim">Grafana 계정: ${esc(cfg.user_prefix || "rk-")}${esc(S.me.username)}</span></div>
+    <iframe class="gf-frame" src="${esc(src)}" title="Grafana" referrerpolicy="same-origin" style="width:100%;height:calc(100vh - 300px);min-height:420px;border:1px solid var(--line, #333);border-radius:6px;background:#111217"></iframe>`;
+}, { liveSkip: true, noOverview: true, perm: "metrics:read" });
 
 // ---------------------------------------------------------------- 승인 폼
 function approvalForm(runId, stepId) {
@@ -956,7 +972,7 @@ function showAll() {
 }
 
 // ================================================================ 명령
-const ORDER = ["threat", "kpi", "alerts", "hourly", "top", "targets", "timeline", "map", "ips", "incidents", "runs", "rules", "collectors", "events", "audit", "blocklist", "doctor", "automation", "mail", "settings", "team", "topology"];
+const ORDER = ["threat", "kpi", "alerts", "hourly", "top", "targets", "timeline", "map", "ips", "incidents", "runs", "rules", "collectors", "events", "audit", "blocklist", "doctor", "automation", "mail", "settings", "team", "topology", "grafana"];
 const ALL = ["threat", "kpi", "alerts", "hourly", "top", "targets", "map", "timeline", "incidents", "runs", "ips", "collectors"];
 const ALIAS = {};
 ORDER.forEach(k => PANELS[k].aliases.forEach(a => ALIAS[a] = k));
@@ -1231,7 +1247,7 @@ input.addEventListener("keydown", e => {
     if (m.length === 1) input.value = m[0]; else if (m.length > 1) out.insertAdjacentHTML("beforeend", `<div class="msg dim">${m.map(esc).join("    ")}</div>`); }
 });
 $("#term").addEventListener("click", e => { if (booted && !e.target.closest("input,button,a,select,table,.crow,.hrow,.col,.tl-row,svg,.globe-box,.link,[data-cmd],.au-grid,.au-bar,.au-tool") && !getSelection().toString()) input.focus(); });
-$("#chips").innerHTML = ["all", "threat", "incidents", "runs", "map", "alerts", "hourly", "top", "ips", "collectors", "rules", "events", "automation", "mail", "settings", "team", "topology"].map(k => k === "all"
+$("#chips").innerHTML = ["all", "threat", "incidents", "runs", "map", "alerts", "hourly", "top", "ips", "collectors", "rules", "events", "automation", "mail", "settings", "team", "topology", "grafana"].map(k => k === "all"
   ? `<button class="chip" data-cmd="dashboard all">all<span class="ko">전체</span></button>` : `<button class="chip" data-cmd="dashboard ${PANELS[k].aliases[0]}">${PANELS[k].aliases[0]}<span class="ko">${esc(PANELS[k].title)}</span></button>`).join("") +
   `<button class="chip" data-cmd="help">help</button>`;
 $$(".chip").forEach(b => b.onclick = async () => { if (busy || loginStep) return; const cmd = b.dataset.cmd; input.value = ""; input.focus();

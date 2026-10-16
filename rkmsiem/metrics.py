@@ -66,7 +66,8 @@ class Metrics:
 
     def prometheus(self):
         lines = []
-        lab = lambda k, extra=None: "{" + ",".join(f'{a}="{str(b)}"' for a, b in (list(k) + (extra or []))) + "}" if (k or extra) else ""
+        q = lambda v: str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        lab = lambda k, extra=None: "{" + ",".join(f'{a}="{q(b)}"' for a, b in (list(k) + (extra or []))) + "}" if (k or extra) else ""
         with self._lock:
             for n, d in self.counters.items():
                 lines.append(f"# TYPE rkmsiem_{n} counter")

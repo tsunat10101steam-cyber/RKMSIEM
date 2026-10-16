@@ -3,7 +3,7 @@
    app.js 보다 먼저 읽히며 app.js 의 공통 도구($, api, esc, toast …)를 호출 시점에 사용한다. */
 "use strict";
 
-const ST_TABS = [["mail", "✉ 메일 서버"], ["people", "⇄ 받는 사람 · 알림"], ["reports", "◷ 보고서 일정"], ["lists", "☰ 목록"], ["rep", "⌕ 평판 (AbuseIPDB)"], ["pull", "⇣ 당겨오기"], ["data", "⌫ 데이터 초기화"]];
+const ST_TABS = [["mail", "✉ 메일 서버"], ["people", "⇄ 받는 사람 · 알림"], ["reports", "◷ 보고서 일정"], ["lists", "☰ 목록"], ["rep", "⌕ 평판 (AbuseIPDB)"], ["pull", "⇣ 당겨오기"], ["tokens", "⚿ API 토큰 · Grafana"], ["data", "⌫ 데이터 초기화"]];
 const ST_PRESETS = {
   gmail: { label: "Gmail", host: "smtp.gmail.com", port: 587, security: "starttls", note: "Google 계정 → 보안 → 2단계 인증 → '앱 비밀번호' 를 만들어 아래 비밀번호에 넣으세요." },
   naver: { label: "Naver", host: "smtp.naver.com", port: 587, security: "starttls", note: "네이버 메일 → 환경설정 → POP3/IMAP 설정에서 SMTP 사용을 켜세요. 2단계 인증이면 애플리케이션 비밀번호." },
@@ -45,13 +45,13 @@ function stTab(k, anim = true) {
   $$(".st-tab", SET.el).forEach(b => b.setAttribute("aria-selected", b.dataset.tab === k));
   const body = $(".st-body", SET.el);
   stOnChange(body, null);
-  ({ mail: stMail, people: stPeople, reports: stReports, lists: stLists, rep: stRep, pull: stPull, data: stData })[k](body);
-  $(".st-bar", SET.el).style.display = k === "data" ? "none" : "";          // 데이터 탭은 저장할 설정이 없음
+  ({ mail: stMail, people: stPeople, reports: stReports, lists: stLists, rep: stRep, pull: stPull, tokens: stTokens, data: stData })[k](body);
+  $(".st-bar", SET.el).style.display = k === "data" || k === "tokens" ? "none" : "";   // 저장할 설정이 없는 탭 (바로 실행)
   stMark();
   if (anim && M) M.animate(body, { opacity: [0, 1], y: [10, 0] }, { type: "spring", stiffness: 260, damping: 24 });
 }
 // 탭 ↔ 저장 대상 (받는 사람 탭은 mail + reports 를 함께 바꿈)
-const stKindsOf = t => ({ mail: ["mail"], people: ["mail", "reports"], reports: ["reports"], lists: ["lists"], rep: ["rep"], pull: ["pull"], data: [] })[t];
+const stKindsOf = t => ({ mail: ["mail"], people: ["mail", "reports"], reports: ["reports"], lists: ["lists"], rep: ["rep"], pull: ["pull"], tokens: [], data: [] })[t];
 function stMark() {
   if (!SET.el) return;
   const tabDirty = t => stKindsOf(t).some(stDirty);
@@ -352,6 +352,65 @@ function stRep(box) {
 // ================================================================ 데이터 초기화
 const ST_COUNT_KO = { events: "이벤트", alerts: "경보", incidents: "사건", runs: "플레이북 실행", blocklist: "차단", accounts: "계정 잠금 기록", incidents_kept: "남기는 사건" };
 const stCounts = c => Object.entries(c).filter(([k, v]) => v || k === "events").map(([k, v]) => `${ST_COUNT_KO[k] || k} <b>${fmt(v)}</b>`).join(" · ");
+// API 토큰 — Prometheus 등 다른 시스템이 /metrics · 조회 API 를 읽을 때 (읽기 전용 권한만, 토큰은 만들 때 한 번만 보임)
+const TOKEN_SCOPE_KO = { "metrics:read": "지표 /metrics (Prometheus)", "alerts:read": "경보 조회", "incidents:read": "사건 조회", "events:read": "이벤트 조회", "collectors:read": "수집기 상태" };
+async function stTokens(box) {
+  if (!can("users:write")) { box.innerHTML = `<p class="hint c-high">API 토큰은 관리자(users:write)만 관리합니다.</p>`; return; }
+  let r, gf;
+  try { [r, gf] = await Promise.all([api("/api/tokens"), api("/api/grafana").catch(() => null)]); }
+  catch (e) { box.innerHTML = `<div class="err">${esc(errMsg(e))}</div>`; return; }
+  const host = location.host, now = Date.now() / 1000;
+  const st = t => t.revoked_at ? `<span class="faint">폐기 ${fmtT(t.revoked_at)}</span>` : t.expires_at && t.expires_at < now ? `<span class="c-medium">만료</span>` : `<span class="acc">사용 중</span>`;
+  box.innerHTML = `<p class="hint">다른 시스템(Prometheus·스크립트)이 RKMSIEM 을 <b>읽을 때</b> 쓰는 열쇠입니다. 읽기 권한만 줄 수 있고, 토큰 값은 <b>만들 때 한 번만</b> 보입니다 (DB 에는 해시만).
+      사람 계정 로그인과 2단계 인증은 그대로이고, 토큰으로는 설정을 바꾸거나 조치를 실행할 수 없습니다.</p>
+    <div class="st-reset"><div class="st-ch"><b>새 토큰</b><small>이름은 쓰는 곳으로 (예: prometheus-lab)</small></div>
+      <div class="st-row"><input class="tk-name" placeholder="이름" maxlength="64" style="flex:1;min-width:180px"><select class="tk-exp" style="flex:0 0 auto;width:auto"><option value="">만료 없음</option><option value="30">30일</option><option value="90" selected>90일</option><option value="365">1년</option></select></div>
+      <div class="st-row">${r.scopes.map(s => `<label class="st-chk"><input type="checkbox" class="tk-scope" value="${esc(s)}" ${s === "metrics:read" ? "checked" : ""}> ${esc(TOKEN_SCOPE_KO[s] || s)}</label>`).join("")}</div>
+      <div class="st-row"><button class="btn primary" data-tk="create">토큰 만들기</button></div>
+      <div class="tk-new"></div></div>
+    <h4 style="margin:16px 0 8px;font:700 14px var(--ko)">토큰 목록</h4>
+    <div class="tbl"><table><thead><tr><th>이름</th><th>앞자리</th><th>권한</th><th>만든 사람</th><th>만료</th><th>마지막 사용</th><th>상태</th><th></th></tr></thead><tbody>${r.items.map(t => `<tr>
+      <td>${esc(t.name)}</td><td><code>${esc(t.prefix)}…</code></td><td>${t.scopes.map(esc).join(", ")}</td><td>${esc(t.created_by)} <span class="faint">${fmtT(t.created_at)}</span></td>
+      <td>${t.expires_at ? fmtT(t.expires_at) : "-"}</td><td>${t.last_used_at ? `${fmtT(t.last_used_at)} <span class="faint">${esc(t.last_used_ip || "")}</span>` : `<span class="faint">없음</span>`}</td>
+      <td>${st(t)}</td><td>${t.revoked_at ? "" : `<button class="btn danger" data-revoke="${t.id}" data-name="${esc(t.name)}">폐기</button>`}</td></tr>`).join("") || `<tr><td colspan="8">${empty("만든 토큰이 없습니다.")}</td></tr>`}</tbody></table></div>
+    <h4 style="margin:16px 0 8px;font:700 14px var(--ko)">Prometheus 에서 수집하기 (prometheus.yml)</h4>
+    <pre class="tk-snip" style="white-space:pre-wrap;user-select:all;font-size:12px">scrape_configs:
+  - job_name: rkmsiem
+    scheme: https
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/rkmsiem.token    # 위에서 만든 토큰 한 줄
+    tls_config:
+      insecure_skip_verify: true                         # 자체 서명 인증서 — 또는 ca_file: rkmsiem.crt
+    static_configs:
+      - targets: ['${esc(host)}']</pre>
+    <p class="hint">Prometheus 가 다른 서버면 이 서버 방화벽에서 그 IP 를 허용하세요 (setup 메뉴 '외부 접속 허용'). 대시보드: web/grafana/rkmsiem-overview.json 을 Grafana 에 Import.</p>
+    <h4 style="margin:16px 0 8px;font:700 14px var(--ko)">Grafana 를 콘솔 안에 띄우기</h4>
+    <p class="hint">${gf?.enabled ? `<span class="acc">켜짐</span> — 명령 <span class="link" data-cmd="grafana">grafana</span> 로 엽니다 (RKMSIEM 로그인 그대로, ${esc(gf.path)})`
+      : `꺼짐 — 서버에서 <code>sudo /opt/rkmsiem/deploy/grafana-embed.sh</code> (Grafana 가 다른 서버면 <code>--upstream http://IP:3000</code>)`}</p>`;
+  $('[data-tk="create"]', box).onclick = async e => {
+    const name = $(".tk-name", box).value.trim(), scopes = $$(".tk-scope:checked", box).map(x => x.value), exp = $(".tk-exp", box).value;
+    if (!name) { shake($(".tk-name", box), 5); return; }
+    if (!scopes.length) { toast(`<span class="err">권한을 하나 이상 고르세요</span>`, "critical"); return; }
+    e.target.disabled = true;
+    try {
+      const t = await api("/api/tokens", { method: "POST", body: { name, scopes, expires_days: exp ? +exp : null } });
+      await stTokens(box);
+      $(".tk-new", box).innerHTML = `<div class="msg acc" style="margin-top:8px">토큰 <b>${esc(t.name)}</b> — 지금만 보입니다. 복사해 두세요:</div>
+        <div class="st-row"><input class="tk-val" readonly value="${esc(t.token)}" style="flex:1;font-family:var(--mono, monospace)"><button class="btn" data-tk="copy">복사</button></div>`;
+      $('[data-tk="copy"]', box).onclick = async () => { const v = $(".tk-val", box); v.select(); try { await navigator.clipboard.writeText(v.value); toast("복사됨"); } catch (x) { document.execCommand("copy"); toast("복사됨"); } };
+      toast(`API 토큰 ${esc(t.name)} 만듦`);
+    } catch (x) { toast(`<span class="err">${esc(errMsg(x))}</span>`, "critical"); e.target.disabled = false; }
+  };
+  $$("[data-revoke]", box).forEach(b => b.onclick = async () => {
+    if (!confirm(`토큰 '${b.dataset.name}' 을 폐기할까요? 이 토큰을 쓰는 곳은 바로 막힙니다.`)) return;
+    b.disabled = true;
+    try { await api(`/api/tokens/${b.dataset.revoke}`, { method: "DELETE" }); toast(`토큰 ${esc(b.dataset.name)} 폐기`); await stTokens(box); }
+    catch (x) { toast(`<span class="err">${esc(errMsg(x))}</span>`, "critical"); b.disabled = false; }
+  });
+}
+
 async function stData(box) {
   const card = (scope, title, desc, danger) => `<div class="st-reset ${danger ? "danger" : ""}" data-scope="${scope}">
       <div class="st-ch"><b>${title}</b><small>${desc}</small></div>

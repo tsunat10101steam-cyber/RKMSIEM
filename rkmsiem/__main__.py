@@ -134,8 +134,11 @@ def main(argv=None):
         try:
             if server == "waitress":
                 from waitress import create_server
+                # nginx 뒤(trusted_proxies)면 X-Forwarded-* 를 지우지 말 것 — ProxyFix 가 실제 클라이언트 IP·https 로 바꿈.
+                # waitress 기본값은 지워 버려서 모든 접속이 127.0.0.1 로 보였다 (로그인 속도 제한·감사 IP·점검 키 확인이 틀어짐)
                 srv = create_server(app, host=host, port=port, threads=int(s.get("api.threads", 32)),
-                                    channel_timeout=3600, send_bytes=1, ident="rkmsiem")
+                                    channel_timeout=3600, send_bytes=1, ident="rkmsiem",
+                                    clear_untrusted_proxy_headers=not int(s.get("api.trusted_proxies", 0) or 0))
                 signal.signal(signal.SIGTERM, lambda *_: srv.close())
                 srv.run()
             else:

@@ -126,7 +126,7 @@ def create_app(platform):
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
-            "connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            "connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         if request.path.startswith("/api/"):
             resp.headers["Cache-Control"] = "no-store"
         return resp
@@ -138,7 +138,7 @@ def create_app(platform):
             @functools.wraps(fn)
             def wrapper(*a, **kw):
                 h = request.headers.get("Authorization", "")
-                user = auth.resolve(h[7:] if h.startswith("Bearer ") else None)
+                user = auth.resolve(h[7:] if h.startswith("Bearer ") else None, client=request.remote_addr)
                 if not user and request.headers.get("X-RKMSIEM-Local"):
                     user = auth.local_user(request.headers["X-RKMSIEM-Local"], request.remote_addr)
                 if not user:
@@ -197,7 +197,8 @@ def create_app(platform):
     @app.get("/metrics")
     @require("metrics:read")
     def prom():
-        return Response(p.metrics.prometheus(), mimetype="text/plain; version=0.0.4")
+        from .promsec import security_metrics
+        return Response(p.metrics.prometheus() + "\n" + security_metrics(p), mimetype="text/plain; version=0.0.4")
 
     # ------------------------------------------------------------ 인증
     @app.post("/api/auth/login")
@@ -664,6 +665,86 @@ def create_app(platform):
                                      "rejected": p.metrics.total("ingest_rejected_total"), "duplicates": p.metrics.total("duplicates_total"),
                                      "parse_errors": p.metrics.total("parse_errors_total"),
                                      "latency": p.metrics.hist_summary("ingest_latency_ms")}})
+
+    # ------------------------------------------------------------ 장기 API 토큰 (Prometheus · Grafana · 외부 도구, 읽기 전용)
+    @app.get("/api/tokens")
+    @require("users:write")
+    def tokens():
+        return jsonify({"items": auth.list_api_tokens(), "scopes": auth.TOKEN_SCOPES})
+
+    @app.post("/api/tokens")
+    @require("users:write")
+    def token_create():
+        b = body({"type": "object", "required": ["name", "scopes"], "additionalProperties": False,
+                  "properties": {"name": {"type": "string", "maxLength": 64}, "scopes": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
+                                 "expires_days": {"type": ["integer", "null"], "minimum": 1, "maximum": 3650}}})
+        if g.user["id"] is None:
+            raise ApiError(403, "forbidden", "API 토큰으로는 토큰을 만들 수 없습니다")
+        try:
+            return jsonify(auth.create_api_token(b["name"], b["scopes"], actor(), b.get("expires_days"))), 201
+        except ValueError as e:
+            raise ApiError(400, str(e))
+
+    @app.delete("/api/tokens/<int:tid>")
+    @require("users:write")
+    def token_revoke(tid):
+        try:
+            auth.revoke_api_token(tid, actor())
+        except KeyError:
+            raise ApiError(404, "not_found")
+        return jsonify({"ok": True})
+
+    # ------------------------------------------------------------ Grafana 임베드 (nginx 가 /grafana/ 를 Grafana 로 넘김)
+    GF_COOKIE = "rk_gf"
+    GF_DEFAULT_DASH = [{"name": "overview", "uid": "rkmsiem-overview", "title": "RKMSIEM 보안 개요"}]   # 예전 settings.yaml 용
+
+    def _gf_cfg():
+        c = s.get("grafana", {}) or {}
+        return {"enabled": bool(c.get("enabled")), "path": "/grafana/", "theme": c.get("theme", "dark"), "user_prefix": c.get("user_prefix", "rk-"),
+                "dashboards": [d for d in (c["dashboards"] if "dashboards" in c else GF_DEFAULT_DASH) or [] if isinstance(d, dict) and d.get("uid")]}
+
+    @app.get("/api/grafana")
+    @require("metrics:read")
+    def grafana_cfg():
+        return jsonify(_gf_cfg())
+
+    @app.post("/api/grafana/session")
+    @require("metrics:read")
+    def grafana_session():
+        """iframe 은 Authorization 헤더를 못 보내므로 /grafana/ 경로 전용 HttpOnly 쿠키를 준다."""
+        if not _gf_cfg()["enabled"]:
+            raise ApiError(409, "grafana_disabled", "Grafana 임베드가 꺼져 있습니다 — 서버에서 sudo deploy/grafana-embed.sh")
+        if g.user["id"] is None:
+            raise ApiError(403, "forbidden", "사람 계정으로만 열 수 있습니다")
+        t, ttl = auth.grafana_ticket(g.user)
+        resp = jsonify({"ok": True, "path": "/grafana/", "expires_in": ttl})
+        resp.set_cookie(GF_COOKIE, t, max_age=ttl, path="/grafana/", httponly=True, samesite="Strict",
+                        secure=request.headers.get("X-Forwarded-Proto") == "https" or request.is_secure)
+        return resp
+
+    @app.delete("/api/grafana/session")
+    @require(None)
+    def grafana_session_end():
+        auth.drop_grafana_ticket(request.cookies.get(GF_COOKIE))     # 경로가 달라 보통은 안 옴 — 로그아웃이 같이 지움
+        resp = jsonify({"ok": True})
+        resp.delete_cookie(GF_COOKIE, path="/grafana/")
+        return resp
+
+    @app.get("/api/grafana/auth")
+    def grafana_auth():
+        """nginx auth_request 전용 (/grafana/ 요청마다). 200 + X-RK-User/X-RK-Role 이면 통과, 401 이면 막음.
+        nginx 가 원래 요청의 쿠키를 그대로 넘겨 준다. 밖에서 직접 불러도 사용자 이름 말고는 알려 주는 것이 없다."""
+        user = auth.resolve(request.cookies.get(GF_COOKIE), kind="grafana")
+        if not user or user["must_change"] or "metrics:read" not in user["permissions"]:
+            return Response("", status=401)
+        roles = s.get("grafana.roles", {}) or {}
+        role = roles.get(user["role"]) or roles.get("default") or "Viewer"
+        if role not in ("Viewer", "Editor", "Admin"):
+            role = "Viewer"
+        resp = Response("", status=200)
+        resp.headers["X-RK-User"] = s.get("grafana.user_prefix", "rk-") + user["username"]
+        resp.headers["X-RK-Role"] = role
+        return resp
 
     # ------------------------------------------------------------ 당겨오기 (다른 시스템 API 를 주기적으로 조회)
     @app.get("/api/pull")

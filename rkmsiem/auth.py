@@ -275,9 +275,56 @@ class AuthService:
             c.execute("DELETE FROM tokens WHERE user_id=?", (u["id"],))
             self.audit.record(actor, "user.mfa_reset", "user", username, conn=c)
 
-    def resolve(self, token, kind="session"):
+    # ---------- 장기 API 토큰 (rkm_…) ----------
+    TOKEN_SCOPES = ["metrics:read", "alerts:read", "incidents:read", "events:read", "collectors:read"]
+
+    def create_api_token(self, name, scopes, actor, expires_days=None):
+        name = (name or "").strip()
+        if not name or len(name) > 64 or not all(c.isalnum() or c in "-_. " for c in name):
+            raise ValueError("이름: 64자 이하 (영문·숫자·한글·-_. )")
+        scopes = sorted(set(scopes or []))
+        bad = [s for s in scopes if s not in self.TOKEN_SCOPES]
+        if not scopes or bad:
+            raise ValueError(f"권한은 {', '.join(self.TOKEN_SCOPES)} 중에서 (읽기 전용)")
+        tok = "rkm_" + secrets.token_urlsafe(32)
+        exp = time.time() + int(expires_days) * 86400 if expires_days else None
+        import json as _json
+        with self.db.tx() as c:
+            if c.execute("SELECT 1 FROM api_tokens WHERE name=?", (name,)).fetchone():
+                raise ValueError("같은 이름의 토큰이 있습니다")
+            cur = c.execute("INSERT INTO api_tokens (name, token_hash, prefix, scopes, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?)",
+                            (name, _sha(tok), tok[:10], _json.dumps(scopes), actor, time.time(), exp))
+            self.audit.record(actor, "api_token.create", "api_token", name, None, {"scopes": scopes, "expires_days": expires_days}, conn=c)
+        return {"id": cur.lastrowid, "name": name, "token": tok, "scopes": scopes, "expires_at": exp}
+
+    def list_api_tokens(self):
+        import json as _json
+        return [dict(r, scopes=_json.loads(r["scopes"])) for r in self.db.all(
+            "SELECT id, name, prefix, scopes, created_by, created_at, expires_at, last_used_at, last_used_ip, revoked_at FROM api_tokens ORDER BY id DESC")]
+
+    def revoke_api_token(self, tid, actor):
+        r = self.db.one("SELECT name FROM api_tokens WHERE id=? AND revoked_at IS NULL", (tid,))
+        if not r:
+            raise KeyError(tid)
+        self.db.execute("UPDATE api_tokens SET revoked_at=? WHERE id=?", (time.time(), tid))
+        self.audit.record(actor, "api_token.revoke", "api_token", r["name"])
+
+    def _resolve_api_token(self, token, client=None):
+        import json as _json
+        r = self.db.one("SELECT * FROM api_tokens WHERE token_hash=?", (_sha(token),))
+        now = time.time()
+        if not r or r["revoked_at"] or (r["expires_at"] and r["expires_at"] < now):
+            return None
+        if not r["last_used_at"] or now - r["last_used_at"] > 60:        # 매 요청마다 쓰지 않게 (1분 단위)
+            self.db.execute("UPDATE api_tokens SET last_used_at=?, last_used_ip=? WHERE id=?", (now, client, r["id"]))
+        return {"id": None, "username": f"token:{r['name']}", "role": "api", "permissions": set(_json.loads(r["scopes"])),
+                "must_change": False, "mfa": False}
+
+    def resolve(self, token, kind="session", client=None):
         if not token:
             return None
+        if kind == "session" and token.startswith("rkm_"):
+            return self._resolve_api_token(token, client)
         r = self.db.one("SELECT u.id, u.username, u.role, u.active, u.must_change_pw, u.totp_enabled, t.expires_at FROM tokens t JOIN users u ON u.id = t.user_id "
                         "WHERE t.token_hash=? AND t.kind=?", (_sha(token), kind))
         if not r or not r["active"] or r["expires_at"] < time.time():
@@ -288,7 +335,23 @@ class AuthService:
                 "must_change": bool(r["must_change_pw"]), "mfa": bool(r["totp_enabled"])}
 
     def logout(self, token):
+        r = self.db.one("SELECT user_id FROM tokens WHERE token_hash=? AND kind='session'", (_sha(token),))
         self.db.execute("DELETE FROM tokens WHERE token_hash=?", (_sha(token),))
+        if r:                                                # 임베드 Grafana 출입증도 같이 무효화
+            self.db.execute("DELETE FROM tokens WHERE user_id=? AND kind='grafana'", (r["user_id"],))
+
+    def grafana_ticket(self, user):
+        """/grafana/ 전용 쿠키 값 — 세션 토큰과 별개라 Grafana 쪽에 새어도 RKMSIEM API 에는 못 씀."""
+        t = secrets.token_urlsafe(32)
+        ttl = int(self.settings.get("grafana.ticket_ttl_sec", 28800) or 28800)
+        self.db.execute("DELETE FROM tokens WHERE user_id=? AND kind='grafana' AND expires_at < ?", (user["id"], time.time()))
+        self.db.execute("INSERT INTO tokens (token_hash, user_id, kind, expires_at, created_at) VALUES (?,?,?,?,?)",
+                        (_sha(t), user["id"], "grafana", time.time() + ttl, time.time()))
+        return t, ttl
+
+    def drop_grafana_ticket(self, ticket):
+        if ticket:
+            self.db.execute("DELETE FROM tokens WHERE token_hash=? AND kind='grafana'", (_sha(ticket),))
 
     def stream_ticket(self, user):
         t = secrets.token_urlsafe(24)

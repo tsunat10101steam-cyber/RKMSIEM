@@ -96,10 +96,15 @@ else
 fi
 
 echo "==> nginx 설정 → $SITE"
+install -d -m 0755 "$ETC/nginx"
 V6="#"; [ -f /proc/net/if_inet6 ] && V6=""                     # IPv6 를 끈 서버에서는 [::] 을 듣지 않음
 cat > "$SITE" <<EOF
 # RKMSIEM HTTPS (deploy/tls.sh 가 만듦 — 직접 고치면 다음 실행 때 덮어씀)
 # 앱은 127.0.0.1 에서만 받고, 밖에서는 이 TLS 포트로만 들어온다.
+map \$http_upgrade \$rk_conn_upgrade {     # Grafana 실시간(웹소켓)용 — 나머지는 keep-alive
+    default upgrade;
+    ''      "";
+}
 server {                                    # 웹 콘솔
     listen $CONSOLE ssl;
 $V6    listen [::]:$CONSOLE ssl;
@@ -134,6 +139,7 @@ $V6    listen [::]:$CONSOLE ssl;
         proxy_pass http://127.0.0.1:8088;
         proxy_read_timeout 180s;            # PDF 보고서 생성
     }
+    include $ETC/nginx/*.conf;              # 추가 경로 (grafana-embed.sh 의 /grafana/ 등)
 }
 
 server {                                    # 담당자 관리 앱

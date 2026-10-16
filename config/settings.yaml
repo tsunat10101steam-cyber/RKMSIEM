@@ -40,6 +40,15 @@ api:
   login_rate_per_min: 10
   stream_heartbeat_sec: 15
 
+grafana:                        # Grafana 를 콘솔 안에 띄우기 (명령 grafana) — 서버에서 sudo deploy/grafana-embed.sh 가 켬
+  enabled: false                # grafana-embed.sh 가 RKMSIEM_GRAFANA__ENABLED=true 로 켬 (nginx 의 /grafana/ 가 있어야 동작)
+  theme: dark
+  ticket_ttl_sec: 28800         # /grafana/ 전용 쿠키 수명 (로그아웃하면 바로 무효)
+  user_prefix: "rk-"            # Grafana 에 만들어지는 사용자 이름 (Grafana 자체 admin 과 겹치지 않게)
+  roles: {admin: Admin, default: Viewer}     # RKMSIEM 역할 → Grafana 역할 (Viewer|Editor|Admin)
+  dashboards:                   # grafana <이름> 으로 바로 여는 대시보드 (uid 는 Grafana 대시보드 주소의 /d/<uid>/)
+    - {name: overview, uid: rkmsiem-overview, title: RKMSIEM 보안 개요}
+
 terminal:                       # 웹 터미널 — 토폴로지에서 SIEM 과 와이어로 이어진 기기에만 SSH (권한 terminal:use)
   enabled: true
   require_mfa: true             # 2단계 인증(mfa setup)을 켠 계정만 터미널 사용

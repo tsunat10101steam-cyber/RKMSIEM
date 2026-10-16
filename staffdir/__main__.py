@@ -89,7 +89,8 @@ def main(argv=None):
     except ImportError:
         app.run(host=cfg["host"], port=cfg["port"], threaded=True, use_reloader=False)
         return 0
-    srv = create_server(app, host=cfg["host"], port=cfg["port"], threads=8, ident="staffdir")
+    srv = create_server(app, host=cfg["host"], port=cfg["port"], threads=8, ident="staffdir",     # nginx 뒤면 X-Forwarded-* 유지 (ProxyFix 가 씀)
+                        clear_untrusted_proxy_headers=not cfg.get("trusted_proxies"))
     signal.signal(signal.SIGTERM, lambda *_: srv.close())
     srv.run()
     return 0
