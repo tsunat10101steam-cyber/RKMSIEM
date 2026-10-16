@@ -61,6 +61,12 @@ def playbook(content, store):
         if s.get("compensate") and s["compensate"]["action"] not in ACTIONS:
             errs.append(f"steps.{s['id']}.compensate: 등록되지 않은 액션 '{s['compensate']['action']}'")
         _check_conds(s.get("when"), known, f"steps.{s['id']}.when", errs)
+        if s["action"] == "manual_task":
+            i = s.get("input") or {}
+            if not str(i.get("title") or "").strip():
+                errs.append(f"steps.{s['id']}: manual_task 는 input.title 필요")
+            if not isinstance(i.get("checklist", []), list) or len(i.get("checklist") or []) > 30:
+                errs.append(f"steps.{s['id']}: manual_task 의 checklist 는 30개 이하 목록")
     if errs:
         raise SchemaError(errs)
 

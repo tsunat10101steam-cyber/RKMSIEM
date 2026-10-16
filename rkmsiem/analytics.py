@@ -162,5 +162,8 @@ def overview(db, config, locator, frm=None, to=None, tz="UTC"):
         "targets": targets, "geo": geo,
         "incidents": {r["state"]: r["n"] for r in inc_states},
         "playbooks": {"by_state": rs, "finished": finished, "success_rate": round(rs.get("succeeded", 0) / finished, 3) if finished else None,
-                      "pending_approvals": pending},
+                      "pending_approvals": pending,
+                      "pending_tasks": [dict(t, checklist=loads(t["checklist"], [])) for t in db.all(
+                          "SELECT t.id, t.run_id, t.step_id, t.incident_id, t.title, t.checklist, t.requested_at, r.playbook_id FROM manual_tasks t "
+                          "JOIN playbook_runs r ON r.id=t.run_id WHERE t.state='pending' ORDER BY t.requested_at")]},
     }

@@ -66,6 +66,12 @@ def asset_lookup(ctx, inp):
     return out
 
 
+# ------------------------------------------------------------------ 사람 할 일 (엔진이 직접 처리 — 실행을 멈추고 사람이 끝내면 이어감)
+@action("manual_task", description="사람 할 일: 제목·설명·확인 목록 → 모두 체크하고 '완료' 해야 다음 단계로 (대응 절차서)")
+def manual_task(ctx, inp):
+    raise ActionError("manual_task 는 플레이북 엔진이 처리합니다 (직접 실행 불가)")
+
+
 # ------------------------------------------------------------------ 사건/기록(플랫폼 내부)
 @action("set_incident_severity", description="사건 심각도 변경")
 def set_incident_severity(ctx, inp):

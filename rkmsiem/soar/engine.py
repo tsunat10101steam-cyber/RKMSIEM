@@ -170,7 +170,7 @@ class PlaybookEngine:
     def execute(self, run_id):
         with self._lock:
             run = self.db.one("SELECT * FROM playbook_runs WHERE id=?", (run_id,))
-            if not run or run["state"] in RUN_FINAL or run["state"] == "waiting_approval":
+            if not run or run["state"] in RUN_FINAL or run["state"] in ("waiting_approval", "waiting_task"):
                 return
             pb = self.config.content_at("playbook", run["playbook_id"], run["playbook_version"]) or self.config.get("playbook", run["playbook_id"])
             if not pb:
@@ -201,6 +201,21 @@ class PlaybookEngine:
                     ctx["steps"][step["id"]] = {"state": "skipped", "output": {}}
                     continue
                 inp = render(step.get("input") or {}, ctx)
+                if step["action"] == "manual_task":             # 사람 할 일: 끝낼 때까지 실행을 멈춤
+                    mt = self.db.one("SELECT * FROM manual_tasks WHERE run_id=? AND step_id=?", (run_id, step["id"]))
+                    if mt is None or mt["state"] == "pending":
+                        if mt is None:
+                            self._request_task(run, step, inp)
+                        else:
+                            self._set_run(run_id, "waiting_task")
+                        return
+                    st = {"done": "succeeded", "skipped": "skipped", "failed": "failed"}[mt["state"]]
+                    out = {"by": mt["done_by"], "note": mt["note"], "checked": loads(mt["checked"], []), "outcome": mt["state"]}
+                    self._set_step(sr["id"], st, out, None if st != "failed" else f"사람이 문제 표시: {mt['note'] or ''}")
+                    ctx["steps"][step["id"]] = {"state": st, "output": out}
+                    if st == "failed" and step.get("on_failure", "abort") != "continue":
+                        return self._on_step_failure(run, pb, step, ctx)
+                    continue
                 if self._approval_needed(step, act):
                     ap = self.db.one("SELECT * FROM approvals WHERE run_id=? AND step_id=?", (run_id, step["id"]))
                     if ap is None:
@@ -273,6 +288,55 @@ class PlaybookEngine:
             return
         self._finish(run, "failed", f"step {step['id']} {ctx['steps'][step['id']]['state']}")
 
+    # ================================================================ 사람 할 일 (manual_task)
+    def _request_task(self, run, step, inp):
+        items = [str(x)[:300] for x in (inp.get("checklist") or [])][:30]
+        now = time.time()
+        with self.db.tx() as c:
+            c.execute("INSERT OR IGNORE INTO manual_tasks (run_id, step_id, incident_id, state, title, instructions, checklist, requested_at) VALUES (?,?,?,?,?,?,?,?)",
+                      (run["id"], step["id"], run["incident_id"], "pending", str(inp.get("title") or step["id"])[:200],
+                       str(inp.get("instructions") or "")[:8000], dumps(items), now))
+            c.execute("UPDATE step_runs SET state='waiting_task', input=?, started_at=COALESCE(started_at, ?) WHERE run_id=? AND step_id=?",
+                      (dumps(inp), now, run["id"], step["id"]))
+            c.execute("UPDATE playbook_runs SET state='waiting_task', updated_at=? WHERE id=?", (now, run["id"]))
+            self.audit.record(f"playbook:{run['playbook_id']}", "task.request", "run", run["id"], f"step {step['id']}",
+                              {"title": inp.get("title"), "items": len(items)}, conn=c)
+        if run["incident_id"]:
+            self.incidents.add_timeline(run["incident_id"], "task_requested", "system",
+                                        {"run_id": run["id"], "step_id": step["id"], "title": inp.get("title") or step["id"]})
+        self._publish(run["id"])
+
+    def complete_task(self, run_id, step_id, actor, outcome, note, checked):
+        """사람이 할 일을 끝냄 — done(확인 목록 전부 체크) · skipped(사유) · failed(문제 발견, 사유)."""
+        if outcome not in ("done", "skipped", "failed"):
+            raise ApprovalError("결과는 done · skipped · failed")
+        note = (note or "").strip()
+        with self.db.tx() as c:
+            mt = c.execute("SELECT * FROM manual_tasks WHERE run_id=? AND step_id=?", (run_id, step_id)).fetchone()
+            if not mt or mt["state"] != "pending":
+                raise ApprovalError("대기 중인 할 일이 없습니다")
+            items = loads(mt["checklist"], [])
+            checked = sorted({int(i) for i in (checked or []) if 0 <= int(i) < len(items)})
+            if outcome == "done" and len(checked) != len(items):
+                raise ApprovalError(f"확인 목록을 모두 체크해야 완료할 수 있습니다 ({len(checked)}/{len(items)})")
+            if outcome != "done" and not note:
+                raise ApprovalError("건너뛰거나 문제를 표시할 때는 메모(사유)가 필요합니다")
+            c.execute("UPDATE manual_tasks SET state=?, checked=?, note=?, done_at=?, done_by=? WHERE id=?",
+                      (outcome, dumps(checked), note or None, time.time(), actor, mt["id"]))
+            c.execute("UPDATE playbook_runs SET state='queued', updated_at=? WHERE id=? AND state='waiting_task'", (time.time(), run_id))
+            self.audit.record(actor, f"task.{outcome}", "run", run_id, note or None, {"step_id": step_id, "checked": checked}, conn=c)
+        if mt["incident_id"]:
+            self.incidents.add_timeline(mt["incident_id"], "task_done", actor, {"run_id": run_id, "step_id": step_id, "title": mt["title"],
+                                                                               "outcome": outcome, "text": note or None})
+        self._wake.set()
+        self._publish(run_id)
+
+    def pending_tasks(self):
+        rows = self.db.all("SELECT t.*, r.playbook_id FROM manual_tasks t JOIN playbook_runs r ON r.id=t.run_id WHERE t.state='pending' ORDER BY t.requested_at")
+        for r in rows:
+            r["checklist"] = loads(r["checklist"], [])
+        return rows
+
     # ================================================================ 승인
     def _request_approval(self, run, step, inp, act):
         timeout = (self.config.get("approval") or {}).get("timeout_sec", 3600)
@@ -336,7 +400,9 @@ class PlaybookEngine:
         with self.db.tx() as c:
             c.execute("UPDATE approvals SET state='expired', decided_at=?, reason='run cancelled' WHERE run_id=? AND state='pending'",
                       (time.time(), run_id))
-            c.execute("UPDATE step_runs SET state='skipped' WHERE run_id=? AND state IN ('pending','waiting_approval')", (run_id,))
+            c.execute("UPDATE step_runs SET state='skipped' WHERE run_id=? AND state IN ('pending','waiting_approval','waiting_task')", (run_id,))
+            c.execute("UPDATE manual_tasks SET state='skipped', note=COALESCE(note, '실행 취소'), done_at=?, done_by=? WHERE run_id=? AND state='pending'",
+                      (time.time(), actor, run_id))
             self.audit.record(actor, "playbook.run.cancel", "run", run_id, reason, {"compensate": compensate}, conn=c)
         if compensate:
             self.compensate(run_id, actor, reason, final_state="cancelled")
@@ -426,4 +492,9 @@ class PlaybookEngine:
         r["steps"] = [dict(s, input=loads(s["input"], None), output=loads(s["output"], None))
                       for s in self.db.all("SELECT * FROM step_runs WHERE run_id=? ORDER BY idx", (run_id,))]
         r["approvals"] = self.db.all("SELECT * FROM approvals WHERE run_id=? ORDER BY id", (run_id,))
+        tasks = {t["step_id"]: dict(t, checklist=loads(t["checklist"], []), checked=loads(t["checked"], []))
+                 for t in self.db.all("SELECT * FROM manual_tasks WHERE run_id=?", (run_id,))}
+        for s in r["steps"]:
+            if s["step_id"] in tasks:
+                s["task"] = tasks[s["step_id"]]
         return r

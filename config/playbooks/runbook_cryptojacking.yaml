@@ -1,0 +1,44 @@
+id: runbook_cryptojacking
+name: 대응 절차 — 크립토재킹 의심
+description: CPU 급증 경보를 받은 담당자가 사건에서 실행 — 확인 → 격리 → 원인 → 재발 방지를 체크하며 진행 (자동 조치 없음)
+enabled: true
+trigger:
+  on: manual
+steps:
+  - id: identify
+    action: manual_task
+    input:
+      title: "1. 무엇이 CPU 를 쓰는지 확인"
+      instructions: "dashboard agents <서버> 에서 CPU 상위 컨테이너·프로세스를 봅니다. 사건: {{incident.title}}"
+      checklist:
+        - CPU 를 쓰는 컨테이너 또는 프로세스를 찾았다
+        - 이름·이미지·명령이 평소와 다른지 확인했다 (xmrig · minerd · 낯선 이미지)
+        - 바깥으로 나가는 연결(채굴 풀)이 있는지 확인했다
+  - id: contain
+    action: manual_task
+    input:
+      title: "2. 격리"
+      instructions: "원격 조치 화면에서 해당 컨테이너 중지 또는 프로세스 종료 · 필요하면 채굴 풀 주소 차단 (dashboard blocklist)"
+      checklist:
+        - 컨테이너 중지 또는 프로세스 종료를 했다
+        - CPU 가 정상으로 돌아온 것을 확인했다
+        - 채굴 풀 IP·도메인을 차단했다 (없으면 메모)
+  - id: root_cause
+    action: manual_task
+    input:
+      title: "3. 원인"
+      instructions: "어떻게 들어왔는지 — 이미지 출처 · 노출된 포트 · 약한 계정 · 취약한 서비스"
+      checklist:
+        - 컨테이너 이미지·실행한 계정의 출처를 확인했다
+        - 침투 경로(노출 포트·계정·취약점)를 메모했다
+  - id: prevent
+    action: manual_task
+    input:
+      title: "4. 재발 방지"
+      checklist:
+        - 해당 이미지·계정을 지우거나 막았다
+        - 같은 경로가 다른 서버에도 있는지 확인했다
+        - CPU 경보 기준(Prometheus 규칙)이 이번 일을 잡았는지 점검했다
+  - id: record
+    action: record_result
+    input: {summary: "크립토재킹 대응 절차 완료 (확인·격리·원인·재발 방지)"}

@@ -25,7 +25,7 @@ FONT_CANDIDATES = [
 ]
 SEV_KO = {"critical": "긴급", "high": "높음", "medium": "주의", "low": "낮음", "info": "정보"}
 SEV_HEX = {"critical": "#d93636", "high": "#e07b17", "medium": "#c9a000", "low": "#6b7685", "info": "#8a94a3"}
-STATE_KO = {"succeeded": "성공", "failed": "실패", "skipped": "건너뜀", "waiting_approval": "승인 대기", "pending": "대기", "running": "실행 중",
+STATE_KO = {"succeeded": "성공", "failed": "실패", "skipped": "건너뜀", "waiting_approval": "승인 대기", "waiting_task": "사람 할 일 대기", "pending": "대기", "running": "실행 중",
             "cancelled": "취소", "compensated": "되돌림", "timed_out": "시간 초과", "rejected": "거절", "queued": "대기", "approved": "승인",
             "expired": "만료"}
 TL_KO = {"created": "사건 생성", "alert_linked": "경보 연결", "alert_escalated": "경보 상향", "severity_changed": "심각도 변경", "state_changed": "상태 변경",

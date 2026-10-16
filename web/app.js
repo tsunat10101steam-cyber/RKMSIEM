@@ -17,7 +17,7 @@ const SEVK = { critical: ["CRIT", "긴급"], high: ["HIGH", "높음"], medium: [
 const sev = l => `<span class="sev ${l === "info" ? "low" : l}">${SEVK[l][0]} <span class="ko">${SEVK[l][1]}</span></span>`;
 const state = s => `<span class="state ${esc(s)}">${esc(STATE_KO[s] || s)}</span>`;
 const STATE_KO = { new: "신규", investigating: "조사 중", responding: "대응 중", resolved: "해결", false_positive: "오탐", queued: "대기",
-  running: "실행 중", waiting_approval: "승인 대기", succeeded: "성공", failed: "실패", cancelled: "취소", compensated: "보상 완료",
+  running: "실행 중", waiting_approval: "승인 대기", waiting_task: "사람 할 일", succeeded: "성공", failed: "실패", cancelled: "취소", compensated: "보상 완료",
   skipped: "건너뜀", timed_out: "시간 초과", rejected: "거절", pending: "대기", approved: "승인", expired: "만료" };
 
 // ================================================================ API
@@ -158,6 +158,7 @@ function onLive(type, msg) {
   if (type === "alert" && d.op === "new" && ["critical", "high"].includes(d.severity))
     toast(`${sev(d.severity)} <b>${esc(d.title)}</b><br><span class="dim">${esc(Object.values(d.group || {}).join(" · "))}</span>`, d.severity,
       () => d.incident_id && run(`incident ${d.incident_id}`));
+  if (type === "run" && d.state === "waiting_task") toast(`<b>사람 할 일</b> — 플레이북 ${esc(d.playbook_id)} (실행 #${d.id})`, "medium", () => run(`run ${d.id}`));
   if (type === "run" && d.state === "waiting_approval") toast(`<b>승인 요청</b> — 플레이북 ${esc(d.playbook_id)} (실행 #${d.id})`, "high", () => run(`run ${d.id}`));
   if (type === "notification") toast(`<b>알림</b> ${esc(d.message)}`, "info");
   if (type === "incident" && d.id) {                                   // 나에게 새로 배정된 사건
@@ -649,12 +650,16 @@ panel("incidents", "10", "사건", "INCIDENTS", ["incidents", "cases", "사건"]
 
 panel("runs", "11", "플레이북 실행 · 승인", "SOAR RUNS", ["runs", "playbooks", "대응"], "실행 상태와 승인 대기 — 바로 승인/거절", 12, async (el, live) => {
   const r = await api(`/api/runs?size=50`);
-  const pend = S.data.playbooks.pending_approvals;
+  const pend = S.data.playbooks.pending_approvals, tasks = S.data.playbooks.pending_tasks || [];
   el.innerHTML = `<div class="meta-line"><span>실행 모드 <b>${esc(S.me.mode)}</b>${S.me.mode === "simulate" ? " (외부 변경 없음)" : " — 승인된 조치가 실제 반영됨"}</span><span>성공률 <b>${S.data.playbooks.success_rate == null ? "-" : (S.data.playbooks.success_rate * 100).toFixed(0) + "%"}</b></span><span>갱신 <b>${fmtT(Date.now() / 1000)}</b></span></div>
     <h4 style="margin:0 0 8px;font:700 14px var(--ko)">승인 대기 ${pend.length}건</h4>
     ${pend.length ? pend.map(p => `<div class="step waiting_approval"><span class="ix">#${p.run_id}</span><div><b>${esc(p.playbook_id)}</b> · 단계 <b>${esc(p.step_id)}</b> (${esc(p.action)})
        · 사건 <span class="link" data-cmd="incident ${p.incident_id}">#${p.incident_id}</span><div class="out">${esc(JSON.stringify(p.input))}</div>
        <div class="dim" style="font-size:12px">요청 ${fmtT(p.requested_at)} · 만료 ${fmtT(p.expires_at)}</div>${approvalForm(p.run_id, p.step_id)}</div><span></span></div>`).join("") : empty("승인 대기 중인 조치가 없습니다.")}
+    <h4 style="margin:18px 0 8px;font:700 14px var(--ko)">사람 할 일 ${tasks.length}건</h4>
+    ${tasks.length ? tasks.map(t => `<div class="step waiting_task"><span class="ix">#${t.run_id}</span><div><b>${esc(t.title)}</b> <span class="dim">· ${esc(t.playbook_id)} · 확인 ${t.checklist.length}개</span>
+       ${t.incident_id ? ` · 사건 <span class="link" data-cmd="incident ${t.incident_id}">#${t.incident_id}</span>` : ""} · <span class="link" data-cmd="run ${t.run_id}">열기</span>
+       <div class="dim" style="font-size:12px">요청 ${fmtT(t.requested_at)}</div></div><span></span></div>`).join("") : empty("기다리는 할 일이 없습니다.")}
     <h4 style="margin:18px 0 8px;font:700 14px var(--ko)">최근 실행</h4>
     ${r.items.length ? `<div class="tbl"><table><thead><tr><th>#</th><th>플레이북</th><th>상태</th><th>모드</th><th>사건</th><th>요청</th><th>생성</th></tr></thead><tbody>${r.items.map(x => `
       <tr style="cursor:pointer" data-cmd="run ${x.id}"><td class="num">${x.id}</td><td>${esc(x.playbook_id)} v${x.playbook_version}</td><td>${state(x.state)}</td><td>${esc(x.mode)}</td>
@@ -1017,7 +1022,36 @@ function approvalForm(runId, stepId) {
   return `<div class="inline-form approval-box" data-run="${runId}" data-step="${esc(stepId)}"><input class="reason" placeholder="승인/거절 사유 (필수)">
     <button class="btn primary" data-ok="1">승인</button><button class="btn danger" data-ok="0">거절</button></div>`;
 }
+// 플레이북의 사람 할 일 (manual_task) — 확인 목록을 모두 체크해야 '완료', 건너뜀·문제는 메모 필수
+function taskForm(runId, t) {
+  const canDo = can("incidents:write");
+  return `<div class="task-box" data-run="${runId}" data-step="${esc(t.step_id)}" style="border:1px dashed var(--line, #444);border-radius:6px;padding:8px 10px;margin-top:6px">
+    <b>${esc(t.title)}</b>${t.instructions ? `<div class="dim" style="white-space:pre-wrap;margin:4px 0">${esc(t.instructions)}</div>` : ""}
+    ${t.checklist.map((c, i) => `<label style="display:block;margin:3px 0"><input type="checkbox" class="tk-chk" value="${i}" ${canDo ? "" : "disabled"}> ${esc(c)}</label>`).join("")}
+    ${canDo ? `<div class="inline-form" style="margin-top:6px"><input class="tk-note" placeholder="메모 (건너뜀·문제는 필수)" style="flex:1">
+      <button class="btn primary" data-tk="done" ${t.checklist.length ? "disabled" : ""}>완료</button><button class="btn" data-tk="skipped">건너뜀</button><button class="btn danger" data-tk="failed">문제 있음</button></div>`
+      : `<div class="dim">처리 권한이 없습니다 (incidents:write).</div>`}</div>`;
+}
+function taskDone(t) {
+  const o = { done: "완료", skipped: "건너뜀", failed: "문제 있음" }[t.state] || t.state;
+  return `<div class="out">${esc(t.title)} — <b>${esc(o)}</b> · ${esc(t.done_by || "")} ${t.done_at ? fmtT(t.done_at) : ""}${t.checklist.length ? ` · 확인 ${t.checked.length}/${t.checklist.length}` : ""}${t.note ? `<br>${esc(t.note)}` : ""}</div>`;
+}
+function bindTaskForms(root) {
+  $$(".task-box", root).forEach(f => {
+    const chks = $$(".tk-chk", f), done = $('[data-tk="done"]', f);
+    chks.forEach(c => c.onchange = () => { if (done) done.disabled = !chks.every(x => x.checked); });
+    $$("[data-tk]", f).forEach(b => b.onclick = async () => {
+      const outcome = b.dataset.tk, note = $(".tk-note", f).value.trim();
+      if (outcome !== "done" && !note) { $(".tk-note", f).focus(); shake($(".tk-note", f), 5); toast("메모(사유)를 적어 주세요", "high"); return; }
+      b.disabled = true;
+      try { await api(`/api/runs/${f.dataset.run}/steps/${encodeURIComponent(f.dataset.step)}/task`, { method: "POST", body: { outcome, note: note || undefined, checked: chks.filter(c => c.checked).map(c => +c.value) } });
+        toast(`할 일 '${esc($("b", f).textContent)}' ${{ done: "완료", skipped: "건너뜀", failed: "문제 표시" }[outcome]}`); await loadOverview(); await rerender(true); }
+      catch (e) { b.disabled = false; toast(`<span class="err">${esc(errMsg(e))}</span>`, "critical"); }
+    });
+  });
+}
 function bindApprovalForms(root) {
+  bindTaskForms(root);
   $$(".approval-box", root).forEach(f => $$("button", f).forEach(b => b.onclick = async () => {
     const reason = $(".reason", f).value.trim();
     if (!reason) { $(".reason", f).focus(); shake($(".reason", f), 5); return; }
@@ -1128,9 +1162,10 @@ async function incidentActions(box, id, live) {
   });
 }
 const TL_KO = { created: "사건 생성", alert_linked: "경보 연결", alert_escalated: "경보 상향", severity_changed: "심각도 변경", state_changed: "상태 변경", assigned: "담당자 배정",
-  comment: "메모", manual_action: "즉시 조치", approval_requested: "승인 요청", approval_approved: "승인", approval_rejected: "거절", playbook_result: "대응 결과", playbook_finished: "플레이북 종료" };
+  comment: "메모", manual_action: "즉시 조치", task_requested: "할 일 요청", task_done: "할 일 처리", approval_requested: "승인 요청", approval_approved: "승인", approval_rejected: "거절", playbook_result: "대응 결과", playbook_finished: "플레이북 종료" };
 function tlText(t) {
   const d = t.detail || {};
+  if (t.kind === "task_done") return `${d.title} — ${{ done: "완료", skipped: "건너뜀", failed: "문제 있음" }[d.outcome] || d.outcome}${d.text ? `: ${d.text}` : ""}`;
   if (t.kind === "manual_action") return `${IX_NAME[d.action] || d.action} ${d.input?.ip || d.input?.account || ""}${d.input?.duration_sec ? ` (${IX_DUR.find(x => x[0] === d.input.duration_sec)?.[1] || d.input.duration_sec + "초"})` : ""}${d.reason ? ` — ${d.reason}` : ""}${d.mode === "simulate" ? " (simulate)" : ""}${d.ok === false ? ` ✘ ${d.error}` : ""}`;
   return d.title || d.summary || d.text || (d.from ? `${STATE_KO[d.from] || d.from} → ${STATE_KO[d.to] || d.to}${d.reason ? ` (${d.reason})` : ""}` : "") ||
     (d.to ? `→ ${d.to}${d.reason ? ` (${d.reason})` : ""}` : "") || (d.assignee !== undefined ? `→ ${d.assignee || "미지정"}` : "") ||
@@ -1140,8 +1175,8 @@ function runBlock(r) {
   return `<div style="margin-bottom:10px"><div><b>#${r.id} ${esc(r.playbook_id)}</b> v${r.playbook_version} ${state(r.state)} <span class="dim">· ${esc(r.mode)} · 요청 ${esc(r.requested_by)}${r.error ? ` · ${esc(r.error)}` : ""}</span>
     ${can("runs:cancel") && !["succeeded", "failed", "cancelled", "compensated"].includes(r.state) ? `<span class="link" data-cancel="${r.id}">[취소+보상]</span>` : ""}</div>
     <div class="step-list" style="margin-top:6px">${r.steps.map((s, i) => `<div class="step ${esc(s.state)}"><span class="ix">${i + 1}</span><div><b>${esc(s.step_id)}</b> <span class="dim">(${esc(s.action)}${s.attempts > 1 ? ` · 시도 ${s.attempts}` : ""})</span>
-      ${s.output ? `<div class="out">${esc(JSON.stringify(s.output)).slice(0, 300)}</div>` : ""}${s.error ? `<div class="err" style="font-size:12px">${esc(s.error)}</div>` : ""}
-      ${s.state === "waiting_approval" ? approvalForm(r.id, s.step_id) : ""}</div><span>${state(s.state)}</span></div>`).join("")}</div></div>`;
+      ${s.output && !s.task ? `<div class="out">${esc(JSON.stringify(s.output)).slice(0, 300)}</div>` : ""}${s.error ? `<div class="err" style="font-size:12px">${esc(s.error)}</div>` : ""}
+      ${s.state === "waiting_approval" ? approvalForm(r.id, s.step_id) : ""}${s.task ? (s.task.state === "pending" ? taskForm(r.id, s.task) : taskDone(s.task)) : ""}</div><span>${state(s.state)}</span></div>`).join("")}</div></div>`;
 }
 async function showEvidence(alertId) {
   try { const a = await api(`/api/alerts/${alertId}`);

@@ -747,6 +747,26 @@ def create_app(platform):
         p.soar.decide(rid, sid, actor(), g.user["role"], b["approve"], b["reason"])
         return jsonify(p.soar.detail(rid))
 
+    @app.post("/api/runs/<int:rid>/steps/<sid>/task")
+    @require("incidents:write")
+    def task_done(rid, sid):
+        """플레이북의 사람 할 일 끝내기 — done(확인 목록 전부) · skipped · failed(문제 발견)."""
+        b = body({"type": "object", "required": ["outcome"], "additionalProperties": False,
+                  "properties": {"outcome": {"enum": ["done", "skipped", "failed"]}, "note": {"type": "string", "maxLength": 4000},
+                                 "checked": {"type": "array", "maxItems": 30, "items": {"type": "integer", "minimum": 0}}}})
+        if g.user["id"] is None:
+            raise ApiError(403, "forbidden", "사람 계정으로만")
+        try:
+            p.soar.complete_task(rid, sid, actor(), b["outcome"], b.get("note"), b.get("checked"))
+        except ApprovalError as e:
+            raise ApiError(409, "task", str(e))
+        return jsonify(p.soar.detail(rid))
+
+    @app.get("/api/tasks")
+    @require("runs:read")
+    def tasks_pending():
+        return jsonify({"items": p.soar.pending_tasks()})
+
     @app.post("/api/runs/<int:rid>/cancel")
     @require("runs:cancel")
     def cancel(rid):

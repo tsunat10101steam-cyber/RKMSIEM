@@ -162,3 +162,63 @@ def test_simulate_block_goes_to_history_only(ctx):
     assert c.get("/api/blocklist", headers=H("adm")).get_json()["stats"]["total"] == 0
     h = c.get("/api/blocklist/history", headers=H("adm")).get_json()["items"]
     assert h[0]["ip"] == "198.51.100.7" and h[0]["action"] == "block" and h[0]["simulated"] == 1 and h[0]["actor"] == "adm"
+
+
+# ---------------------------------------------------------------- ④ 플레이북 사람 할 일 (manual_task) · 대응 절차서
+def test_runbook_manual_tasks(ctx):
+    p, c, H = ctx
+    attack(c, "103.75.190.8", "backup")
+    iid = first_incident(c, H)
+    rid = c.post("/api/playbooks/runbook_cryptojacking/run", headers=H("ana"), json={"incident_id": iid}).get_json()["run_id"]
+    p.soar.run_pending()
+    r = c.get(f"/api/runs/{rid}", headers=H("view")).get_json()
+    assert r["state"] == "waiting_task"
+    s0 = r["steps"][0]
+    assert s0["state"] == "waiting_task" and s0["task"]["title"].startswith("1.") and len(s0["task"]["checklist"]) == 3
+    inc_title = c.get(f"/api/incidents/{iid}", headers=H("view")).get_json()["title"]
+    assert inc_title in s0["task"]["instructions"] and "{{" not in s0["task"]["instructions"]          # 템플릿 렌더
+    assert [t["run_id"] for t in c.get("/api/tasks", headers=H("view")).get_json()["items"]] == [rid]
+    assert c.get("/api/overview", headers=H("view")).get_json()["playbooks"]["pending_tasks"][0]["run_id"] == rid
+
+    done = lambda u, sid, **b: c.post(f"/api/runs/{rid}/steps/{sid}/task", headers=H(u), json=b)
+    assert done("view", "identify", outcome="done", checked=[0, 1, 2]).status_code == 403
+    r = done("ana", "identify", outcome="done", checked=[0, 1])
+    assert r.status_code == 409 and "모두 체크" in r.get_json()["details"]                           # 확인 목록 다 체크해야
+    assert done("ana", "identify", outcome="skipped").status_code == 409                               # 건너뜀은 사유 필수
+    assert done("ana", "identify", outcome="done", checked=[0, 1, 2], note="miner 컨테이너").status_code == 200
+    p.soar.run_pending()
+    r = c.get(f"/api/runs/{rid}", headers=H("ana")).get_json()
+    assert [s["state"] for s in r["steps"]][:2] == ["succeeded", "waiting_task"] and r["state"] == "waiting_task"
+    assert r["steps"][0]["output"]["by"] == "ana" and r["steps"][0]["task"]["checked"] == [0, 1, 2]
+    assert done("ana", "identify", outcome="done", checked=[0, 1, 2]).status_code == 409                # 이미 끝난 할 일
+
+    done("adm", "contain", outcome="skipped", note="이미 운영팀이 중지함")
+    p.soar.run_pending()
+    done("adm", "root_cause", outcome="done", checked=[0, 1])
+    p.soar.run_pending()
+    r = done("adm", "prevent", outcome="failed", note="같은 이미지가 web-02 에도 있음")
+    p.soar.run_pending()
+    r = c.get(f"/api/runs/{rid}", headers=H("adm")).get_json()
+    assert [s["state"] for s in r["steps"]] == ["succeeded", "skipped", "succeeded", "failed", "pending"] and r["state"] == "failed"
+    tl = [t for t in c.get(f"/api/incidents/{iid}", headers=H("adm")).get_json()["timeline"] if t["kind"] in ("task_requested", "task_done")]
+    assert len([t for t in tl if t["kind"] == "task_done"]) == 4 and tl[-1]["detail"]["outcome"] == "failed"
+    assert not c.get("/api/tasks", headers=H("adm")).get_json()["items"]
+
+
+def test_cancel_run_closes_pending_task(ctx):
+    p, c, H = ctx
+    attack(c, "103.75.190.8", "backup")
+    iid = first_incident(c, H)
+    rid = c.post("/api/playbooks/runbook_cryptojacking/run", headers=H("adm"), json={"incident_id": iid}).get_json()["run_id"]
+    p.soar.run_pending()
+    assert c.post(f"/api/runs/{rid}/cancel", headers=H("adm"), json={"reason": "오탐"}).status_code == 200
+    assert not c.get("/api/tasks", headers=H("adm")).get_json()["items"]
+    assert c.get(f"/api/runs/{rid}", headers=H("adm")).get_json()["steps"][0]["task"]["state"] == "skipped"
+
+
+def test_manual_task_validation(ctx):
+    p, c, H = ctx
+    from rkmsiem.schemas import SchemaError
+    pb = {"id": "bad_rb", "name": "x", "trigger": {"on": "manual"}, "steps": [{"id": "a", "action": "manual_task", "input": {"checklist": ["x"]}}]}
+    with pytest.raises(SchemaError, match="title"):
+        p.config.put("playbook", "bad_rb", pb, "t", "test")
