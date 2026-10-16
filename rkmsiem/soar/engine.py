@@ -368,17 +368,24 @@ class PlaybookEngine:
         return results
 
     # ================================================================ 사람의 직접 조치 (차단 목록 화면 등)
-    def manual_action(self, action_name, inp, actor, reason):
-        """승인 권한이 있는 사람이 직접 실행하는 조치 — 그 자체가 승인이므로 플레이북 승인 단계 없이 실행하고 감사에 남긴다."""
+    def manual_action(self, action_name, inp, actor, reason, incident_id=None):
+        """승인 권한이 있는 사람이 직접 실행하는 조치 — 그 자체가 승인이므로 플레이북 승인 단계 없이 실행하고 감사에 남긴다.
+        incident_id 를 주면 그 사건의 타임라인에도 남긴다 (사건 화면의 즉시 조치)."""
         act = ACTIONS[action_name]
-        run = {"id": None, "incident_id": None, "mode": self.mode(), "playbook_id": "manual"}
+        run = {"id": None, "incident_id": incident_id, "mode": self.mode(), "playbook_id": "manual"}
         try:
             out = act(Ctx(self, run, action_name, actor), inp)
             ok, err = True, None
         except Exception as e:                       # noqa: BLE001
             out, ok, err = {}, False, str(e)
-        self.audit.record(actor, f"manual.{action_name}", "manual", None, reason,
+        self.audit.record(actor, f"manual.{action_name}", "incident" if incident_id else "manual", incident_id, reason,
                           {"input": inp, "output": out, "error": err, "mode": run["mode"], "destructive": getattr(act, "destructive", False)})
+        if incident_id:
+            self.incidents.add_timeline(incident_id, "manual_action", actor, {"action": action_name, "input": inp, "reason": reason,
+                                                                             "ok": ok, "error": err, "mode": run["mode"],
+                                                                             "result": {k: out.get(k) for k in ("simulated", "would", "blocked", "unblocked",
+                                                                                        "already_blocked", "disabled", "verdict", "score", "found")
+                                                                                        if isinstance(out, dict) and k in out}})
         if not ok:
             raise ApprovalError(err)
         return out

@@ -898,8 +898,8 @@ async function showIncident(id, live) {
       ${can("incidents:assign") ? `<div class="inline-form"><select class="assignee" aria-label="담당자"><option>불러오는 중…</option></select><button class="btn" data-act="assign">배정</button>
         ${d.assignee !== S.me?.username ? `<button class="btn" data-act="assignme">나에게</button>` : ""}</div>` : ""}
       ${can("incidents:write") ? `<div class="inline-form"><input class="comment" placeholder="메모"><button class="btn" data-act="comment">기록</button></div>` : ""}
-      ${can("playbooks:run") ? `<div class="inline-form"><input class="pb" placeholder="수동 플레이북 id (예: manual_enrichment)"><button class="btn" data-act="runpb">실행</button></div>` : ""}
       <div class="inline-form"><button class="btn" data-act="pdf">⇩ 사건 보고서 PDF</button>${can("incidents:write") ? `<input class="mailto" placeholder="받는 사람 (비우면 기본 수신자)"><button class="btn" data-act="mailpdf">✉ 보고서 메일로</button>` : ""}</div>
+      <div class="ix-act"></div>
       <h4 style="margin:16px 0 8px;font:700 14px var(--ko)">탐지 근거 경보</h4>
       ${d.alerts.map(a => `<div class="step"><span class="ix">${SEVK[a.severity][0]}</span><div><b>${esc(a.title)}</b>${Object.entries(a.group).filter(([k]) => k !== "source.ip").map(([, v]) => ` <span class="grp">${esc(v)}</span>`).join("")} <span class="dim">· ${esc(a.rule_id)} v${a.rule_version}</span>
         <div class="out">${esc(a.detail)} · 위험 ${a.risk_score.toFixed(0)} = 기본 ${a.risk_basis.severity_base} + ${a.risk_basis.event_count}×${a.risk_basis.per_event}${a.risk_basis.modifiers.length ? " · 보정 " + a.risk_basis.modifiers.map(m => `${m.delta} (${esc(m.note)})`).join(", ") : ""}</div>
@@ -926,14 +926,66 @@ async function showIncident(id, live) {
     if (b.dataset.act === "mailpdf") { b.disabled = true; api(`/api/reports/incident/${id}/email`, { method: "POST", body: $(".mailto", f).value.trim() ? { to: $(".mailto", f).value.trim() } : {} })
       .then(r => toast(r.status === "sent" ? `보고서 메일 발송 → ${esc(r.recipients)}` : `<span class="err">발송 실패: ${esc(r.error || r.status)}</span>`, r.status === "sent" ? "info" : "critical"))
       .catch(e => toast(`<span class="err">${esc(errMsg(e))}</span>`, "critical")).finally(() => b.disabled = false); }
-    if (b.dataset.act === "runpb" && $(".pb", f).value.trim()) act(() => api(`/api/playbooks/${encodeURIComponent($(".pb", f).value.trim())}/run`, { method: "POST", body: { incident_id: id } }), "플레이북 실행 요청됨");
   });
+  incidentActions($(".ix-act", body), id, live);
   if (A && !live) anime({ targets: $$(".step, .tl-list li", body), opacity: [0, 1], translateX: [-12, 0], delay: anime.stagger(30), duration: 350, easing: "easeOutCubic" });
 }
+// 사건 화면의 즉시 조치 — 플레이북 없이 사람이 바로 (차단·잠금은 승인 권한, 사유 필수). 사건 타임라인·감사 로그에 남음
+const IX_DUR = [[3600, "1시간"], [86400, "1일"], [604800, "7일"], [0, "무기한"]];
+const IX_NAME = { ip_reputation: "평판 조회", asset_lookup: "계정 조회", block_ip: "IP 차단", unblock_ip: "차단 해제", disable_account: "계정 잠금", enable_account: "잠금 해제" };
+async function incidentActions(box, id, live) {
+  if (!box) return;
+  let t;
+  try { t = await api(`/api/incidents/${id}/targets`); } catch (e) { box.innerHTML = ""; return; }
+  const A_ = t.actions, any = Object.values(A_).some(Boolean) || t.playbooks.length;
+  if (!any) { box.innerHTML = ""; return; }
+  const ipRow = x => `<tr><td><code>${esc(x.value)}</code></td><td class="num">${x.events}</td>
+    <td>${x.blocked ? `<span class="c-high">차단 중</span>${x.expires_at ? ` <span class="faint">~${fmtT(x.expires_at)}</span>` : ` <span class="faint">무기한</span>`}` : x.guard ? `<span class="faint">${esc(x.guard)}</span>` : `<span class="dim">-</span>`}</td>
+    <td class="ix-btns">${A_.ip_reputation ? `<button class="btn" data-ix="ip_reputation" data-v="${esc(x.value)}">평판</button>` : ""}
+      ${x.blocked ? (A_.unblock_ip ? `<button class="btn" data-ix="unblock_ip" data-v="${esc(x.value)}">차단 해제</button>` : "")
+        : A_.block_ip && !x.guard ? `<select class="ix-dur" aria-label="차단 기간">${IX_DUR.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><button class="btn danger" data-ix="block_ip" data-v="${esc(x.value)}">차단</button>` : ""}</td></tr>`;
+  const acRow = x => `<tr><td><code>${esc(x.value)}</code></td><td class="num">${x.events}</td>
+    <td>${x.locked ? `<span class="c-high">잠김</span>` : x.guard ? `<span class="faint">${esc(x.guard)}</span>` : `<span class="dim">-</span>`}</td>
+    <td class="ix-btns">${A_.asset_lookup ? `<button class="btn" data-ix="asset_lookup" data-v="${esc(x.value)}">조회</button>` : ""}
+      ${x.locked ? (A_.enable_account ? `<button class="btn" data-ix="enable_account" data-v="${esc(x.value)}">잠금 해제</button>` : "")
+        : A_.disable_account && !x.guard ? `<button class="btn danger" data-ix="disable_account" data-v="${esc(x.value)}">잠금</button>` : ""}</td></tr>`;
+  const sim = t.mode === "simulate";
+  box.innerHTML = `<h4 style="margin:16px 0 8px;font:700 14px var(--ko)">즉시 조치 <span class="faint" style="font:400 12px var(--mono, monospace)">${sim ? "simulate — 실제로 바꾸지 않고 기록만" : "<span class='c-high'>live — 실제 방화벽·계정에 반영</span>"}</span></h4>
+    ${A_.block_ip || A_.disable_account || A_.unblock_ip ? `<div class="inline-form"><input class="ix-why" placeholder="사유 (차단·잠금·해제에 필수 — 타임라인·감사 로그에 남음)" style="flex:1"></div>` : ""}
+    ${t.ips.length ? `<div class="tbl"><table><thead><tr><th>IP</th><th>이벤트</th><th>상태</th><th></th></tr></thead><tbody>${t.ips.map(ipRow).join("")}</tbody></table></div>` : ""}
+    ${t.accounts.length ? `<div class="tbl" style="margin-top:6px"><table><thead><tr><th>계정</th><th>이벤트</th><th>상태</th><th></th></tr></thead><tbody>${t.accounts.map(acRow).join("")}</tbody></table></div>` : ""}
+    ${!t.ips.length && !t.accounts.length ? `<div class="dim">이 사건에서 나온 IP·계정이 없습니다.</div>` : ""}
+    ${t.hosts.length ? `<div class="dim" style="font-size:12px;margin-top:6px">관련 호스트: ${t.hosts.map(h => `<code>${esc(h.value)}</code>`).join(" ")}</div>` : ""}
+    ${t.playbooks.length ? `<div class="inline-form" style="margin-top:8px"><select class="ix-pb" aria-label="플레이북">${t.playbooks.map(pb => `<option value="${esc(pb.id)}" title="${esc(pb.description)}">${esc(pb.name)} (${esc(pb.id)})</option>`).join("")}</select><button class="btn" data-ix="playbook">플레이북 실행</button></div>` : ""}
+    <div class="ix-out"></div>`;
+  const out = $(".ix-out", box), why = () => ($(".ix-why", box)?.value || "").trim();
+  const show = (title, o) => { out.innerHTML = `<div class="msg" style="margin-top:8px"><b>${esc(title)}</b><pre class="pl-pre" style="max-height:220px;overflow:auto">${esc(JSON.stringify(o, null, 2))}</pre></div>`; };
+  $$("[data-ix]", box).forEach(b => b.onclick = async () => {
+    const a = b.dataset.ix, v = b.dataset.v;
+    if (a === "playbook") {
+      b.disabled = true;
+      try { const r = await api(`/api/playbooks/${encodeURIComponent($(".ix-pb", box).value)}/run`, { method: "POST", body: { incident_id: id } });
+        toast(`플레이북 실행 #${r.run_id ?? ""} 요청됨`); await loadOverview(); await showIncident(id, true); }
+      catch (e) { toast(`<span class="err">${esc(errMsg(e))}</span>`, "critical"); b.disabled = false; }
+      return;
+    }
+    const destructive = ["block_ip", "unblock_ip", "disable_account", "enable_account"].includes(a);
+    if (destructive && !why()) { const w = $(".ix-why", box); w?.focus(); if (w) shake(w, 5); toast("사유를 적어 주세요", "high"); return; }
+    const dur = a === "block_ip" ? +b.parentElement.querySelector(".ix-dur").value : null;
+    if (["block_ip", "disable_account"].includes(a) && !confirm(`${IX_NAME[a]}: ${v}${a === "block_ip" ? ` (${IX_DUR.find(d => d[0] === dur)[1]})` : ""}\n${sim ? "simulate 모드 — 실제로 바꾸지 않고 기록만 합니다." : "live 모드 — 실제로 반영됩니다."}\n계속할까요?`)) return;
+    b.disabled = true;
+    try {
+      const r = await api(`/api/incidents/${id}/actions`, { method: "POST", body: { action: a, target: v, ...(why() ? { reason: why() } : {}), ...(a === "block_ip" ? { duration_sec: dur || null } : {}) } });
+      if (destructive) { toast(`${esc(IX_NAME[a])} ${esc(v)} ${r.output?.simulated ? "(simulate — 기록만)" : "완료"}`); await loadOverview(); await showIncident(id, true); }
+      else { show(`${IX_NAME[a]} — ${v}`, r.output); b.disabled = false; }
+    } catch (e) { toast(`<span class="err">${esc(errMsg(e))}</span>`, "critical"); b.disabled = false; }
+  });
+}
 const TL_KO = { created: "사건 생성", alert_linked: "경보 연결", alert_escalated: "경보 상향", severity_changed: "심각도 변경", state_changed: "상태 변경", assigned: "담당자 배정",
-  comment: "메모", approval_requested: "승인 요청", approval_approved: "승인", approval_rejected: "거절", playbook_result: "대응 결과", playbook_finished: "플레이북 종료" };
+  comment: "메모", manual_action: "즉시 조치", approval_requested: "승인 요청", approval_approved: "승인", approval_rejected: "거절", playbook_result: "대응 결과", playbook_finished: "플레이북 종료" };
 function tlText(t) {
   const d = t.detail || {};
+  if (t.kind === "manual_action") return `${IX_NAME[d.action] || d.action} ${d.input?.ip || d.input?.account || ""}${d.input?.duration_sec ? ` (${IX_DUR.find(x => x[0] === d.input.duration_sec)?.[1] || d.input.duration_sec + "초"})` : ""}${d.reason ? ` — ${d.reason}` : ""}${d.mode === "simulate" ? " (simulate)" : ""}${d.ok === false ? ` ✘ ${d.error}` : ""}`;
   return d.title || d.summary || d.text || (d.from ? `${STATE_KO[d.from] || d.from} → ${STATE_KO[d.to] || d.to}${d.reason ? ` (${d.reason})` : ""}` : "") ||
     (d.to ? `→ ${d.to}${d.reason ? ` (${d.reason})` : ""}` : "") || (d.assignee !== undefined ? `→ ${d.assignee || "미지정"}` : "") ||
     (d.action ? `${d.action} ${JSON.stringify(d.input || {})}` : "") || (d.state ? `${d.playbook || ""} ${STATE_KO[d.state] || d.state}${d.error ? " — " + d.error : ""}` : "") || JSON.stringify(d);

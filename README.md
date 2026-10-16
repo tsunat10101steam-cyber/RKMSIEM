@@ -100,6 +100,7 @@ sudo ./deploy/smoketest.sh          # live 에서 nft 차단·해제까지 검�
 | 데이터 초기화 | 콘솔 `dashboard settings data` 또는 `python -m rkmsiem reset test|all [--dry-run]`. test = 문서용 IP 대역(192.0.2.x · 198.51.100.x · 203.0.113.x)·임시 계정 rkmsmoke*·샘플 데이터와 그에 딸린 경보·사건·실행·차단만, all = 이벤트·경보·사건 전부(확인 문구 필요). 설정·사용자·감사 로그·수집 위치는 유지. `smoketest.sh` 는 끝에 test 정리를 자동 실행 (`KEEP_TEST_DATA=1` 이면 남김). 위협 수준은 '오탐'으로 닫은 사건의 경보를 빼고 판단 |
 | Suricata IDS 연동 | IDS 서버에서 `deploy/ids/install-ship.sh --siem http://<SIEM>:8088` → 전송기(`rkmsiem-ship-eve`, 표준 라이브러리만)가 eve.json 의 alert·anomaly 를 `POST /api/ingest/suricata-eve` 로 보냄 (위치 저장·재시도·로그 회전 대응, 중복은 SIEM 이 제거). 규칙: `ids_suricata_alert`(IP·시그니처별, 10분 20회 반복 상향, Suricata 심각도 보정), `ids_then_login`(IDS 경보 IP 가 1시간 안에 로그인 성공 → 긴급). 기존 설치에도 `suricata-eve` 소스가 한 번 자동 추가됨 |
 | 당겨오기 (`dashboard settings pull`) | 다른 시스템의 API 를 주기적으로 조회해 이벤트로 (수집기 `http_pull`). 프리셋: **Prometheus** · **Grafana** · **Kubernetes 경고 이벤트** · 일반 JSON API (화면이 있으면 `connect` 로 엶). 목록 위치·쪽 나눔·커서(저장이 끝난 뒤에만 이동)·같은 항목 한 번만(id_fields)·조건(only_if)·필드 매핑/고정 값. 토큰은 웹에서 암호화 저장(또는 `RKMSIEM_PULL_*` 환경 변수만), 인증서 지문 고정, 리다이렉트 안 따라감, 인증 정보는 https 로만(이 서버 안 127.0.0.1 예외). 저장 전 '지금 시험'으로 받은 항목·변환 결과 확인. 기본 규칙 '외부 시스템 경보'(event.action=external_alert, 외부 심각도 반영) |
+| 사건 즉시 조치 (`incident <번호>`) | 사건에서 나온 **IP·계정**을 표로 (이벤트 수 · 차단 중/만료 · 잠김 · 차단 금지·사내망·보호 계정 표시) → 버튼으로 바로: 평판 조회 · 계정 조회 · **IP 차단(1시간/1일/7일/무기한)** · 차단 해제 · **계정 잠금** · 잠금 해제, 플레이북 고르기·실행. 차단·잠금은 승인 권한(`runs:approve`)이 있는 사람이 직접 = 그 자체가 승인, 해제는 `runs:cancel`, **사유 필수**. 보호 목록은 거부. 모든 조치(실패·거부 포함)는 사건 타임라인 + 감사 로그, simulate 모드면 기록만 |
 | 연동 (`connect`, [docs/CONNECT.md](docs/CONNECT.md)) | 제품에 상관없이 `settings → 당겨오기` 에서 연동 소스를 추가: **데이터**(API 를 주기적으로 조회 → 이벤트·탐지) + **화면**(제품 대시보드). 콘솔 `connect` 로 연동 목록·상태와 화면, `connect <연동> [대시보드]`. 화면은 콘솔과 **다른 출처 https 8445** 에서 열려 제품 페이지가 콘솔 로그인 토큰에 닿지 못함 (8443 의 `/connect/` 는 차단), `/connect/` 전용 쿠키(로그아웃 시 무효), 선택적으로 RKMSIEM 로그인을 헤더로 넘김(auth proxy). `dashboard all` 칸을 연동 화면으로 바꾸거나 뒤에 추가 (range 연동). 프리셋: Prometheus · Grafana · Kubernetes · JSON API. 반대 방향은 **API 토큰**(읽기 전용, `settings → API 토큰`)으로 Prometheus 가 `/metrics`(`rkmsiem_*` 보안 지표) 수집 |
 | 담당자 관리 앱 (`staffdir/`, 별도 서비스 `rkmsiem-staff`, 포트 8090) | RKMSIEM 과 다른 프로세스·DB·관리자 로그인. 담당자 이름·팀·메일·연락처·배정 메일 알림·비활성화·삭제, 변경 기록(연락처 값은 남기지 않음). RKMSIEM 은 연동 키(`RKMSIEM_STAFF_SYNC_KEY` = `STAFF_SYNC_KEYS`)로 `GET /api/sync/people` 를 60초마다 가져가고, 명단이 바뀌면 앱이 `POST /api/staff/hook` 으로 알려 바로 다시 가져감. 앱이 꺼져 있어도 마지막 명단으로 계속 동작. 관리자 만들기: `sudo rkmsiem-staff admin add <이름>` |
 | 담당자 (`dashboard team`) | 담당자 명단(담당자 관리 앱에서 가져옴)·맡은 열린 사건 수·연동 상태·'지금 가져오기'·'담당자 관리 열기'. 명단에 있으면 로그인 계정이 없어도 배정 가능, 아이디가 같으면 로그인 계정과 연결. 관리자는 로그인 계정(역할·임시 비밀번호·비활성화)을 따로 관리, 마지막 관리자는 권한을 내리거나 비활성화할 수 없음. 사건 화면에서 담당자 선택/나에게 배정, 사건 목록 필터(내 사건·미배정·담당자별), 배정되면 명단의 메일·실시간 알림 |
@@ -159,7 +160,7 @@ python -m pytest tests test_detector.py --junitxml=reports/test-report.xml
 | `tests/test_p8_ubuntu.py` | 실제 Ubuntu auth.log(22.04·24.04)·journald 형식 · 운영 설정 유효성 · nft/헬퍼 명령 인자 · live 플레이북→실제 명령 · 재시작 시 차단 재적용 · 차단 금지 대역 · 위협 인텔 피드 · 비밀번호 변경 · 자가 점검 |
 | `test_detector.py` | 기존 테스트(수정 없이) — 새 엔진/설정으로도 통과 |
 
-최근 결과: **145 passed, 1 skipped** (Python 3.13) · 부하: 로컬에서 약 3,350 events/s (HTTP 배치 500건, 이전 측정)
+최근 결과: **151 passed, 1 skipped** (Python 3.13) · 부하: 로컬에서 약 3,350 events/s (HTTP 배치 500건, 이전 측정)
 
 ## 5. 보안
 

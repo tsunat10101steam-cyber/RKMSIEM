@@ -449,6 +449,89 @@ def create_app(platform):
                           or (a["target_type"] == "run" and a["target_id"] in run_ids))]
         return jsonify(d)
 
+    # 사건 화면의 즉시 조치 — 플레이북 없이 사람이 바로 (승인 권한 = 그 자체가 승인). 사건 타임라인 · 감사 로그에 남음
+    INCIDENT_ACTIONS = {                         # 조치 → (대상 종류, 필요한 권한, 사유 필수)
+        "ip_reputation": ("ip", "playbooks:run", False), "asset_lookup": ("account", "playbooks:run", False),
+        "block_ip": ("ip", "runs:approve", True), "unblock_ip": ("ip", "runs:cancel", True),
+        "disable_account": ("account", "runs:approve", True), "enable_account": ("account", "runs:cancel", True),
+    }
+
+    def _incident_entities(iid):
+        """사건의 경보·근거 이벤트에서 나온 IP · 계정 · 호스트와 지금 상태 (차단 중 · 잠김 · 보호 목록)."""
+        alerts = [row_to_alert(r) for r in p.db.all("SELECT * FROM alerts WHERE incident_id=?", (iid,))]
+        ev_ids = sorted({e for a in alerts for e in a["evidence"]})[-2000:]
+        ips, accts, hosts = {}, {}, {}
+
+        def bump(d, k, n=1):
+            if k:
+                d[str(k)] = d.get(str(k), 0) + n
+        for a in alerts:
+            for k, v in a["group"].items():
+                if k.endswith(".ip") or k == "ip":
+                    bump(ips, v, 0)
+                if k.startswith("user") or k == "account":
+                    bump(accts, v, 0)
+        for i in range(0, len(ev_ids), 500):
+            chunk = ev_ids[i:i + 500]
+            for r in p.db.all(f"SELECT source_ip, user_name, host_name FROM events WHERE id IN ({','.join('?' * len(chunk))})", chunk):
+                bump(ips, r["source_ip"]); bump(accts, r["user_name"]); bump(hosts, r["host_name"])
+        lists = Lists(p.config.get("lists"))
+        now = time.time()
+        blocked = {r["ip"]: r for r in p.db.all("SELECT ip, expires_at, reason FROM blocklist WHERE expires_at IS NULL OR expires_at > ?", (now,))}
+        locked = {r["account"] for r in p.db.all("SELECT account FROM account_state WHERE disabled=1")}
+
+        def ipinfo(ip, n):
+            guard = next((why for name, why in (("never_block", "차단 금지"), ("allowlist", "허용 목록"), ("internal_networks", "사내망"))
+                          if lists.contains(name, ip)), None)
+            b = blocked.get(ip)
+            return {"value": ip, "events": n, "blocked": bool(b), "expires_at": b["expires_at"] if b else None, "guard": guard}
+        return {"ips": sorted((ipinfo(k, v) for k, v in ips.items()), key=lambda x: -x["events"])[:50],
+                "accounts": sorted(({"value": k, "events": v, "locked": k in locked, "guard": "보호 계정" if lists.contains("protected_accounts", k) else None}
+                                    for k, v in accts.items()), key=lambda x: -x["events"])[:50],
+                "hosts": sorted(({"value": k, "events": v} for k, v in hosts.items()), key=lambda x: -x["events"])[:20]}
+
+    @app.get("/api/incidents/<int:iid>/targets")
+    @require("incidents:read")
+    def incident_targets(iid):
+        if not p.incidents.get(iid):
+            raise KeyError(iid)
+        perms = g.user["permissions"]
+        pbs = [{"id": pid, "name": pb.get("name") or pid, "description": pb.get("description", "")}
+               for pid, pb in sorted(p.config.all("playbook").items()) if pb.get("enabled", True)]
+        return jsonify(dict(_incident_entities(iid), mode=s.get("soar.mode"),
+                            actions={k: k_perm in perms for k, (_, k_perm, _) in INCIDENT_ACTIONS.items()},
+                            playbooks=pbs if "playbooks:run" in perms else []))
+
+    @app.post("/api/incidents/<int:iid>/actions")
+    @require("incidents:read")
+    def incident_action(iid):
+        b = body({"type": "object", "required": ["action", "target"], "additionalProperties": False,
+                  "properties": {"action": {"enum": list(INCIDENT_ACTIONS)}, "target": {"type": "string", "minLength": 1, "maxLength": 128},
+                                 "reason": {"type": "string", "maxLength": 500}, "duration_sec": {"type": ["integer", "null"], "minimum": 60, "maximum": 31536000}}})
+        kind, perm, need_reason = INCIDENT_ACTIONS[b["action"]]
+        if perm not in g.user["permissions"]:
+            p.audit.record(actor(), "auth.forbidden", "api", request.path, None, {"perm": perm, "action": b["action"]})
+            return jsonify({"error": "forbidden", "required": perm}), 403
+        if g.user["id"] is None:
+            raise ApiError(403, "forbidden", "사람 계정으로만 조치할 수 있습니다")
+        if not p.incidents.get(iid):
+            raise KeyError(iid)
+        reason = (b.get("reason") or "").strip()
+        if need_reason and not reason:
+            raise ApiError(400, "reason_required", "사유를 적어 주세요 (감사 로그·사건 타임라인에 남음)")
+        inp = {kind: b["target"].strip()}
+        if b["action"] == "block_ip":
+            inp.update(duration_sec=b.get("duration_sec"), reason=f"사건 #{iid}: {reason}")
+        if b["action"] == "disable_account":
+            inp["reason"] = f"사건 #{iid}: {reason}"
+        try:
+            out = p.soar.manual_action(b["action"], inp, actor(), reason or None, incident_id=iid)
+        except ApprovalError as e:
+            raise ApiError(409, "action_failed", str(e))
+        if b["action"] in ("block_ip", "unblock_ip"):
+            p.bus.publish("config", {"kind": "blocklist", "name": b["target"]})
+        return jsonify({"action": b["action"], "target": b["target"], "mode": s.get("soar.mode"), "output": out})
+
     @app.post("/api/incidents/<int:iid>/transition")
     @require("incidents:write")
     def transition(iid):
