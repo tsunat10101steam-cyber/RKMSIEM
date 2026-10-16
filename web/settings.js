@@ -644,6 +644,13 @@ function stPullEditor(box) {
     return src;
   };
   val("auth_type").onchange = () => { PULL.edit.src = collect(); stPullEditor(box); };
+  let lastHost = (() => { try { return new URL(val("url").value).host; } catch (e) { return ""; } })();
+  val("url").addEventListener("change", () => {                     // 데이터 주소의 호스트를 바꾸면 같은 호스트였던 화면 주소도 따라감
+    let h; try { h = new URL(val("url").value.trim()).host; } catch (e) { return; }
+    const vu = val("view_url"); let vh; try { vh = new URL(vu.value.trim()); } catch (e) { return; }
+    if (h && vh.host === lastHost && h !== lastHost) { vh.host = h; vu.value = vh.origin; toast(`화면 주소도 ${esc(vh.origin)} 로 바꿨습니다`); }
+    lastHost = h;
+  });
   $('[data-x="cancel"]', ed).onclick = () => { PULL.edit = null; ed.innerHTML = ""; };
   $('[data-x="apply"]', ed).onclick = () => {
     const src = collect(), list = SET.draft.pull.sources;

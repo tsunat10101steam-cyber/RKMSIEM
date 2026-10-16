@@ -763,7 +763,7 @@ def create_app(platform):
             data = r.read(2 * 1024 * 1024 + 1)
             conn.close()
         except OSError as e:
-            raise ApiError(502, "upstream_error", f"연동 제품에 접속 실패: {e}")
+            raise ApiError(502, "upstream_error", f"연동 제품({urllib.parse.urlsplit(v['url']).netloc})에 접속 실패: {e} — '화면 주소' 확인")
         if r.status >= 400 or len(data) > 2 * 1024 * 1024:
             raise ApiError(502, "upstream_error", f"연동 제품 응답 {r.status}")
         try:
@@ -792,7 +792,8 @@ def create_app(platform):
         try:
             conn, r = cx.fetch(v, request.method, target, hdr, body)
         except OSError as e:
-            return Response(f"연동 제품에 접속하지 못했습니다: {e}", status=502, mimetype="text/plain")
+            return Response(f"연동 제품({urllib.parse.urlsplit(v['url']).netloc})에 접속하지 못했습니다: {e}\n"
+                            f"→ settings → 당겨오기 → {sid} 편집 → '화면 주소' 확인 (제품이 켜져 있는지 · 이 서버에서 닿는지)", status=502, mimetype="text/plain; charset=utf-8")
         origin = _cx_origin()
         headers = []
         for k, val in r.getheaders():
