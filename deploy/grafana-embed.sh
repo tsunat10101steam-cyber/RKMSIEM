@@ -1,7 +1,7 @@
 #!/bin/bash
 # Grafana 를 RKMSIEM 콘솔 안에 띄우기 — https://<서버>:8443/grafana/ 로 붙이고 RKMSIEM 로그인으로 들어간다.
 #
-#   sudo ./deploy/grafana-embed.sh                                   Grafana 가 이 서버(127.0.0.1:3000)에 있을 때
+#   sudo rkmsiem-grafana  (= 이 스크립트)                              Grafana 가 이 서버(127.0.0.1:3000)에 있을 때
 #   sudo ./deploy/grafana-embed.sh --upstream http://10.0.0.60:3000  다른 서버(또는 도커)의 Grafana
 #   sudo ./deploy/grafana-embed.sh --public-url https://10.0.0.53:8443   브라우저가 접속하는 주소 (기본: 이 서버 첫 IP)
 #   sudo ./deploy/grafana-embed.sh --keep-direct                     Grafana 의 3000 포트 직접 접속도 그대로 둠

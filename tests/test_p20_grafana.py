@@ -154,3 +154,20 @@ def test_grafana_embed_script_and_tls_include():
     g = open(os.path.join(ROOT, "deploy", "grafana-embed.sh"), encoding="utf-8").read()
     for k in ("auth_request /_rk_grafana_auth", "internal;", "X-WEBAUTH-USER \\$rk_user", "GF_AUTH_PROXY_WHITELIST", "GF_SECURITY_ALLOW_EMBEDDING=true"):
         assert k in g, k
+
+
+def test_grafana_panel_slots_config(ctx):
+    p, c, auth = ctx
+    boss, ana = login(c, "boss"), login(c, "ana")
+    put = lambda body: c.put("/api/config/grafana_panels", headers=H(boss), json=body)
+    ok = {"slots": [{"slot": "hourly", "mode": "replace", "uid": "rkmsiem-overview", "panel_id": 7, "title": "열린 경보", "height": 300},
+                    {"slot": "collectors", "mode": "after", "uid": "node-exp", "panel_id": 5, "span": 12}]}
+    assert put(ok).status_code == 200
+    assert put({"slots": [{"slot": "hourly", "uid": "a", "panel_id": 1}, {"slot": "hourly", "mode": "replace", "uid": "b", "panel_id": 2}]}).status_code == 400   # 같은 칸 두 번 바꾸기
+    assert put({"slots": [{"slot": "settings", "uid": "a", "panel_id": 1}]}).status_code == 400          # 대시보드 칸이 아님
+    assert put({"slots": [{"slot": "hourly", "uid": "../api/admin", "panel_id": 1}]}).status_code == 400  # uid 는 경로로 못 씀
+    assert put({"slots": [{"slot": "hourly", "uid": "a", "panel_id": 0}]}).status_code == 400
+    assert c.put("/api/config/grafana_panels", headers=H(ana), json=ok).status_code == 403               # 분석가는 못 바꿈
+    g = c.get("/api/grafana", headers=H(ana)).get_json()                                                   # 보는 것은 metrics:read 로
+    assert [s["slot"] for s in g["slots"]] == ["hourly", "collectors"] and g["slots"][1]["mode"] == "after"
+    assert c.get("/api/config/grafana_panels", headers=H(boss)).get_json()["version"] >= 2

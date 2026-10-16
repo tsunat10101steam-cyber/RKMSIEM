@@ -355,10 +355,10 @@ const stCounts = c => Object.entries(c).filter(([k, v]) => v || k === "events").
 // API 토큰 — Prometheus 등 다른 시스템이 /metrics · 조회 API 를 읽을 때 (읽기 전용 권한만, 토큰은 만들 때 한 번만 보임)
 const TOKEN_SCOPE_KO = { "metrics:read": "지표 /metrics (Prometheus)", "alerts:read": "경보 조회", "incidents:read": "사건 조회", "events:read": "이벤트 조회", "collectors:read": "수집기 상태" };
 async function stTokens(box) {
-  if (!can("users:write")) { box.innerHTML = `<p class="hint c-high">API 토큰은 관리자(users:write)만 관리합니다.</p>`; return; }
   let r, gf;
-  try { [r, gf] = await Promise.all([api("/api/tokens"), api("/api/grafana").catch(() => null)]); }
+  try { [r, gf] = await Promise.all([can("users:write") ? api("/api/tokens") : null, api("/api/grafana").catch(() => null)]); }
   catch (e) { box.innerHTML = `<div class="err">${esc(errMsg(e))}</div>`; return; }
+  if (!r) { box.innerHTML = `<p class="hint">API 토큰은 관리자(users:write)만 관리합니다.</p><div class="gf-slots"></div>`; return stGfSlots($(".gf-slots", box), gf); }
   const host = location.host, now = Date.now() / 1000;
   const st = t => t.revoked_at ? `<span class="faint">폐기 ${fmtT(t.revoked_at)}</span>` : t.expires_at && t.expires_at < now ? `<span class="c-medium">만료</span>` : `<span class="acc">사용 중</span>`;
   box.innerHTML = `<p class="hint">다른 시스템(Prometheus·스크립트)이 RKMSIEM 을 <b>읽을 때</b> 쓰는 열쇠입니다. 읽기 권한만 줄 수 있고, 토큰 값은 <b>만들 때 한 번만</b> 보입니다 (DB 에는 해시만).
@@ -388,7 +388,9 @@ async function stTokens(box) {
     <p class="hint">Prometheus 가 다른 서버면 이 서버 방화벽에서 그 IP 를 허용하세요 (setup 메뉴 '외부 접속 허용'). 대시보드: web/grafana/rkmsiem-overview.json 을 Grafana 에 Import.</p>
     <h4 style="margin:16px 0 8px;font:700 14px var(--ko)">Grafana 를 콘솔 안에 띄우기</h4>
     <p class="hint">${gf?.enabled ? `<span class="acc">켜짐</span> — 명령 <span class="link" data-cmd="grafana">grafana</span> 로 엽니다 (RKMSIEM 로그인 그대로, ${esc(gf.path)})`
-      : `꺼짐 — 서버에서 <code>sudo /opt/rkmsiem/deploy/grafana-embed.sh</code> (Grafana 가 다른 서버면 <code>--upstream http://IP:3000</code>)`}</p>`;
+      : `꺼짐 — 서버에서 <code>sudo rkmsiem-grafana</code> (Grafana 가 다른 서버면 <code>--upstream http://IP:3000</code>)`}</p>
+    <div class="gf-slots"></div>`;
+  stGfSlots($(".gf-slots", box), gf);
   $('[data-tk="create"]', box).onclick = async e => {
     const name = $(".tk-name", box).value.trim(), scopes = $$(".tk-scope:checked", box).map(x => x.value), exp = $(".tk-exp", box).value;
     if (!name) { shake($(".tk-name", box), 5); return; }
@@ -409,6 +411,76 @@ async function stTokens(box) {
     try { await api(`/api/tokens/${b.dataset.revoke}`, { method: "DELETE" }); toast(`토큰 ${esc(b.dataset.name)} 폐기`); await stTokens(box); }
     catch (x) { toast(`<span class="err">${esc(errMsg(x))}</span>`, "critical"); b.disabled = false; }
   });
+}
+
+// 대시보드 칸에 Grafana 패널 끼우기 — 저장 대상은 설정 grafana_panels (버전·감사 로그)
+const GF_SLOT_KEYS = ["threat", "kpi", "alerts", "hourly", "top", "targets", "map", "timeline", "incidents", "runs", "ips", "collectors"];
+const GF_RECOMMEND = [{ slot: "hourly", mode: "replace", uid: "rkmsiem-overview", panel_id: 7, title: "열린 경보 (심각도별)", height: 300 },
+  { slot: "collectors", mode: "after", uid: "rkmsiem-overview", panel_id: 8, title: "최근 24시간 이벤트 (출처별)", span: 12, height: 280 }];
+async function gfJson(path) {                                        // 같은 주소의 /grafana/ API (쿠키로 RKMSIEM 로그인 확인)
+  const r = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json" } });
+  if (!r.ok) throw new Error(`Grafana ${r.status}`);
+  return r.json();
+}
+async function stGfSlots(box, gf) {
+  const ro = !can("config:write");
+  let cfg;
+  try { cfg = await api("/api/config/grafana_panels"); } catch (e) { box.innerHTML = ""; return; }
+  const G = { rows: stClone(cfg.content?.slots || []), dash: [], panels: {}, err: "" };
+  if (gf?.enabled) {
+    try { await gfSession(); G.dash = (await gfJson(`${gf.path}api/search?type=dash-db&limit=200`)).map(d => ({ uid: d.uid, title: d.title })); }
+    catch (e) { G.err = `Grafana 대시보드 목록을 못 읽었습니다 (${esc(e.message)}) — uid·패널 번호를 직접 넣으세요`; }
+  }
+  const panelsOf = async uid => {
+    if (!gf?.enabled || !uid || G.panels[uid]) return;
+    try { const d = (await gfJson(`${gf.path}api/dashboards/uid/${encodeURIComponent(uid)}`)).dashboard;
+      G.panels[uid] = (d.panels || []).flatMap(p => p.type === "row" ? (p.panels || []) : [p]).filter(p => p.id && p.type !== "row").map(p => ({ id: p.id, title: p.title || `#${p.id}` })); }
+    catch (e) { G.panels[uid] = []; }
+  };
+  const draw = async () => {
+    await Promise.all(G.rows.map(x => panelsOf(x.uid)));
+    const slotOpt = v => GF_SLOT_KEYS.map(k => `<option value="${k}" ${k === v ? "selected" : ""}>${esc(PANELS[k].no)} ${esc(PANELS[k].title)}</option>`).join("");
+    const dashIn = x => G.dash.length ? `<select data-f="uid"><option value="">대시보드 선택</option>${G.dash.map(d => `<option value="${esc(d.uid)}" ${d.uid === x.uid ? "selected" : ""}>${esc(d.title)}</option>`).join("")}
+        ${x.uid && !G.dash.some(d => d.uid === x.uid) ? `<option value="${esc(x.uid)}" selected>${esc(x.uid)} (없음?)</option>` : ""}</select>`
+      : `<input data-f="uid" placeholder="대시보드 uid" value="${esc(x.uid || "")}" style="width:160px">`;
+    const panelIn = x => (G.panels[x.uid] || []).length ? `<select data-f="panel_id"><option value="">패널 선택</option>${G.panels[x.uid].map(p => `<option value="${p.id}" ${p.id === x.panel_id ? "selected" : ""}>${esc(p.title)}</option>`).join("")}</select>`
+      : `<input data-f="panel_id" type="number" min="1" placeholder="패널 번호" value="${x.panel_id || ""}" style="width:96px">`;
+    box.innerHTML = `<h4 style="margin:16px 0 8px;font:700 14px var(--ko)">대시보드 칸에 Grafana 그래프 끼우기</h4>
+      <p class="hint">dashboard all 의 칸을 Grafana 패널로 <b>바꾸거나</b> 그 칸 <b>뒤에 추가</b>합니다. 범위(range)를 따라가고 1분마다 새로 고침.
+        바꾼 칸의 원래 패널은 <code>dashboard &lt;이름&gt; raw</code>.${gf?.enabled ? "" : ` <span class="c-medium">Grafana 임베드가 꺼져 있어 지금은 표시되지 않습니다.</span>`}</p>
+      ${G.err ? `<div class="msg c-medium">${G.err}</div>` : ""}
+      <div class="tbl"><table><thead><tr><th>칸</th><th>방식</th><th>Grafana 대시보드</th><th>패널</th><th>제목</th><th>높이</th><th></th></tr></thead><tbody>${G.rows.map((x, i) => `<tr data-i="${i}">
+        <td><select data-f="slot" ${ro ? "disabled" : ""}>${slotOpt(x.slot)}</select></td>
+        <td><select data-f="mode" ${ro ? "disabled" : ""}><option value="replace">바꾸기</option><option value="after" ${x.mode === "after" ? "selected" : ""}>뒤에 추가</option></select></td>
+        <td>${dashIn(x)}</td><td>${panelIn(x)}</td>
+        <td><input data-f="title" maxlength="64" value="${esc(x.title || "")}" placeholder="Grafana 패널 제목" style="width:180px"></td>
+        <td><input data-f="height" type="number" min="120" max="1200" step="20" value="${x.height || 300}" style="width:76px"></td>
+        <td>${ro ? "" : `<button class="btn danger" data-gx="del">삭제</button>`}</td></tr>`).join("") || `<tr><td colspan="7">${empty("끼운 Grafana 패널이 없습니다.")}</td></tr>`}</tbody></table></div>
+      ${ro ? `<p class="hint">읽기 전용 — config:write 권한 필요</p>` : `<div class="st-row" style="margin-top:8px"><button class="btn" data-gx="add">+ 칸 추가</button><button class="btn" data-gx="rec">추천 배치 (RKMSIEM 보안 개요)</button>
+        <span class="grow"></span><span class="faint">설정 grafana_panels v${cfg.version ?? "-"}</span><button class="btn primary" data-gx="save">저장</button></div>`}`;
+    $$("tr[data-i]", box).forEach(tr => $$("[data-f]", tr).forEach(inp => inp.onchange = async () => {
+      const x = G.rows[+tr.dataset.i], f = inp.dataset.f, v = inp.value.trim();
+      if (f === "panel_id" || f === "height") x[f] = v ? +v : undefined; else x[f] = v;
+      if (f === "uid") delete x.panel_id;
+      if (f === "panel_id" && !x.title) x.title = (G.panels[x.uid] || []).find(p => p.id === +v)?.title || "";
+      if (f === "uid" || f === "panel_id") await draw();
+    }));
+    $$('[data-gx="del"]', box).forEach(b => b.onclick = () => { G.rows.splice(+b.closest("tr").dataset.i, 1); draw(); });
+    const on = (k, fn) => { const b = $(`[data-gx="${k}"]`, box); if (b) b.onclick = fn; };
+    on("add", () => { G.rows.push({ slot: GF_SLOT_KEYS.find(k => !G.rows.some(x => x.slot === k)) || "hourly", mode: "replace", uid: G.dash[0]?.uid || "", height: 300 }); draw(); });
+    on("rec", () => { G.rows = stClone(GF_RECOMMEND); draw(); });
+    on("save", async e => {
+      const bad = G.rows.findIndex(x => !x.uid || !x.panel_id);
+      if (bad >= 0) { toast(`<span class="err">${bad + 1}번째 줄: 대시보드와 패널을 고르세요</span>`, "critical"); return; }
+      e.target.disabled = true;
+      const slots = G.rows.map(x => Object.fromEntries(Object.entries({ slot: x.slot, mode: x.mode || "replace", uid: x.uid, panel_id: +x.panel_id, title: x.title || undefined,
+        height: x.height ? +x.height : undefined, span: x.span ? +x.span : undefined }).filter(([, v]) => v !== undefined && v !== "")));
+      try { const r2 = await api(`/api/config/grafana_panels?comment=${encodeURIComponent("콘솔 settings 에서 Grafana 칸 변경")}`, { method: "PUT", body: { slots } });
+        toast(`Grafana 칸 저장 → v${r2.version} · <span class="link" data-cmd="dashboard all">dashboard all</span> 에서 확인`); await loadGf(); stGfSlots(box, gf); }
+      catch (x) { toast(`<span class="err">${esc(errMsg(x))}</span>`, "critical"); e.target.disabled = false; }
+    });
+  };
+  await draw();
 }
 
 async function stData(box) {

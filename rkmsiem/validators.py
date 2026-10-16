@@ -189,6 +189,15 @@ def reputation(content, store):
         raise SchemaError(["의심 점수 기준은 악성 기준보다 낮아야 합니다"])
 
 
+def grafana_panels(content, store):
+    seen = set()
+    for x in content.get("slots") or []:
+        if x.get("mode", "replace") == "replace":
+            if x["slot"] in seen:
+                raise SchemaError([f"'{x['slot']}' 칸을 바꾸는 Grafana 패널이 둘입니다 — 하나만 (나머지는 '뒤에 추가')"])
+            seen.add(x["slot"])
+
+
 def register(store):
     from .plugins import load_builtin
     load_builtin()                       # 참조 검증 전에 내장 수집기·파서·액션 등록
@@ -201,5 +210,6 @@ def register(store):
     store.add_validator("mail", mail)
     store.add_validator("reports", reports)
     store.add_validator("reputation", reputation)
+    store.add_validator("grafana_panels", grafana_panels)
     from .topology import validate as topology
     store.add_validator("topology", topology)

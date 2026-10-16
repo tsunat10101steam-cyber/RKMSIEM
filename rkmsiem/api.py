@@ -701,6 +701,7 @@ def create_app(platform):
     def _gf_cfg():
         c = s.get("grafana", {}) or {}
         return {"enabled": bool(c.get("enabled")), "path": "/grafana/", "theme": c.get("theme", "dark"), "user_prefix": c.get("user_prefix", "rk-"),
+                "slots": (p.config.get("grafana_panels") or {}).get("slots", []),
                 "dashboards": [d for d in (c["dashboards"] if "dashboards" in c else GF_DEFAULT_DASH) or [] if isinstance(d, dict) and d.get("uid")]}
 
     @app.get("/api/grafana")
@@ -713,7 +714,7 @@ def create_app(platform):
     def grafana_session():
         """iframe 은 Authorization 헤더를 못 보내므로 /grafana/ 경로 전용 HttpOnly 쿠키를 준다."""
         if not _gf_cfg()["enabled"]:
-            raise ApiError(409, "grafana_disabled", "Grafana 임베드가 꺼져 있습니다 — 서버에서 sudo deploy/grafana-embed.sh")
+            raise ApiError(409, "grafana_disabled", "Grafana 임베드가 꺼져 있습니다 — 서버에서 sudo rkmsiem-grafana")
         if g.user["id"] is None:
             raise ApiError(403, "forbidden", "사람 계정으로만 열 수 있습니다")
         t, ttl = auth.grafana_ticket(g.user)
@@ -858,7 +859,7 @@ def create_app(platform):
     def audit_verify():
         return jsonify(p.audit.verify())
 
-    CONFIG_KINDS = ("detection", "lists", "sources", "workflow", "rbac", "approval", "assets", "intel", "mail", "reports", "reputation", "topology")
+    CONFIG_KINDS = ("detection", "lists", "sources", "workflow", "rbac", "approval", "assets", "intel", "mail", "reports", "reputation", "topology", "grafana_panels")
 
     @app.get("/api/config/<kind>")
     @require("config:read")

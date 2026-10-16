@@ -104,6 +104,7 @@ def deb(paths, out, version, now):
             "smoketest": f'#!/bin/sh\nexec {dep}/smoketest.sh "$@"\n',
             "update": f'#!/bin/sh\nexec {dep}/update.sh "$@"\n',
             "uninstall": f'#!/bin/sh\nexec {dep}/uninstall.sh "$@"\n',
+            "grafana": f'#!/bin/sh\nexec {dep}/grafana-embed.sh "$@"\n',
         }
         for cmd, body in cmds.items():
             add_bytes(t, f"./usr/sbin/rkmsiem-{cmd}", body.encode(), 0o755, now)

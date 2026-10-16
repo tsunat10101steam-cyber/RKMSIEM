@@ -236,6 +236,19 @@ REPUTATION = {
         "malicious_score": {"type": "integer", "minimum": 1, "maximum": 100}, "suspicious_score": {"type": "integer", "minimum": 0, "maximum": 100}}}},
 }
 
+# 대시보드(dashboard all) 칸에 끼우는 Grafana 단일 패널 (d-solo) — 콘솔 settings 'API 토큰 · Grafana' 탭에서 편집
+GRAFANA_SLOTS = ["threat", "kpi", "alerts", "hourly", "top", "targets", "map", "timeline", "incidents", "runs", "ips", "collectors"]
+GRAFANA_PANELS = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {"slots": {"type": "array", "maxItems": 12, "items": {
+        "type": "object", "required": ["slot", "uid", "panel_id"], "additionalProperties": False,
+        "properties": {"slot": {"enum": GRAFANA_SLOTS}, "mode": {"enum": ["replace", "after"]},
+                       "uid": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}, "panel_id": {"type": "integer", "minimum": 1, "maximum": 100000},
+                       "title": {"type": "string", "maxLength": 64}, "span": {"type": "integer", "minimum": 3, "maximum": 12},
+                       "height": {"type": "integer", "minimum": 120, "maximum": 1200}}}}},
+}
+
 TOPOLOGY = {
     "type": "object",
     "additionalProperties": False,
@@ -297,7 +310,7 @@ EVENT = {
 KINDS = {
     "rule": RULE, "playbook": PLAYBOOK, "detection": DETECTION_POLICY, "lists": LISTS, "sources": SOURCES,
     "workflow": WORKFLOW, "rbac": RBAC, "approval": APPROVAL, "assets": ASSETS, "intel": INTEL,
-    "mail": MAIL, "reports": REPORTS, "reputation": REPUTATION, "topology": TOPOLOGY,
+    "mail": MAIL, "reports": REPORTS, "reputation": REPUTATION, "topology": TOPOLOGY, "grafana_panels": GRAFANA_PANELS,
 }
 
 

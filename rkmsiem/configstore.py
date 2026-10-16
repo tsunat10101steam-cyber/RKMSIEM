@@ -17,7 +17,7 @@ from .db import dumps, loads
 
 log = logging.getLogger("rkmsiem.config")
 
-SINGLETONS = ["lists", "detection", "sources", "workflow", "rbac", "approval", "assets", "intel", "mail", "reports", "reputation", "topology"]
+SINGLETONS = ["lists", "detection", "sources", "workflow", "rbac", "approval", "assets", "intel", "mail", "reports", "reputation", "topology", "grafana_panels"]
 COLLECTIONS = {"rule": "rules", "playbook": "playbooks"}   # kind → 디렉터리
 
 

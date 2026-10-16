@@ -106,6 +106,7 @@ class Platform:
                     "schedule": [{"name": "daily", "every": "day", "at": "09:00", "period_hours": 24, "to": [], "enabled": False},
                                  {"name": "weekly", "every": "monday", "at": "09:00", "period_hours": 168, "to": [], "enabled": False}]},
         "topology": {"nodes": [], "links": []},
+        "grafana_panels": {"slots": []},
         "reputation": {"abuseipdb": {"enabled": True, "max_age_days": 90, "timeout_sec": 5, "cache_ttl_sec": 21600,
                                      "malicious_score": 75, "suspicious_score": 25}},
     }

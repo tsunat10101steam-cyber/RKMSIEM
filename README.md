@@ -100,6 +100,7 @@ sudo ./deploy/smoketest.sh          # live 에서 nft 차단·해제까지 검�
 | 데이터 초기화 | 콘솔 `dashboard settings data` 또는 `python -m rkmsiem reset test|all [--dry-run]`. test = 문서용 IP 대역(192.0.2.x · 198.51.100.x · 203.0.113.x)·임시 계정 rkmsmoke*·샘플 데이터와 그에 딸린 경보·사건·실행·차단만, all = 이벤트·경보·사건 전부(확인 문구 필요). 설정·사용자·감사 로그·수집 위치는 유지. `smoketest.sh` 는 끝에 test 정리를 자동 실행 (`KEEP_TEST_DATA=1` 이면 남김). 위협 수준은 '오탐'으로 닫은 사건의 경보를 빼고 판단 |
 | Suricata IDS 연동 | IDS 서버에서 `deploy/ids/install-ship.sh --siem http://<SIEM>:8088` → 전송기(`rkmsiem-ship-eve`, 표준 라이브러리만)가 eve.json 의 alert·anomaly 를 `POST /api/ingest/suricata-eve` 로 보냄 (위치 저장·재시도·로그 회전 대응, 중복은 SIEM 이 제거). 규칙: `ids_suricata_alert`(IP·시그니처별, 10분 20회 반복 상향, Suricata 심각도 보정), `ids_then_login`(IDS 경보 IP 가 1시간 안에 로그인 성공 → 긴급). 기존 설치에도 `suricata-eve` 소스가 한 번 자동 추가됨 |
 | 당겨오기 (`dashboard settings pull`) | 다른 시스템의 API 를 주기적으로 조회해 이벤트로 (수집기 `http_pull`). 프리셋: **Prometheus 경보** · **Kubernetes 경고 이벤트** · 일반 JSON API. 목록 위치·쪽 나눔·커서(저장이 끝난 뒤에만 이동)·같은 항목 한 번만(id_fields)·조건(only_if)·필드 매핑/고정 값. 토큰은 웹에서 암호화 저장(또는 `RKMSIEM_PULL_*` 환경 변수만), 인증서 지문 고정, 리다이렉트 안 따라감, 인증 정보는 https 로만(이 서버 안 127.0.0.1 예외). 저장 전 '지금 시험'으로 받은 항목·변환 결과 확인. 기본 규칙 '외부 시스템 경보'(event.action=external_alert, 외부 심각도 반영) |
+| Grafana 연결 ([docs/GRAFANA.md](docs/GRAFANA.md)) | ① **API 토큰**(`settings → API 토큰 · Grafana`, 읽기 권한만·해시 저장·만료·폐기) 으로 Prometheus 가 `/metrics` 수집 — `rkmsiem_alerts_open`·`rkmsiem_threat_level`·`rkmsiem_blocked_ips`·`rkmsiem_collector_up` 등. ② `sudo rkmsiem-grafana` (`deploy/grafana-embed.sh`) → Grafana 를 `https://<서버>:8443/grafana/` 로 붙이고 **RKMSIEM 로그인 그대로** (nginx auth_request + Grafana auth.proxy, `/grafana/` 전용 쿠키·로그아웃 시 무효, 계정 `rk-<이름>`), 콘솔 `grafana`. ③ **대시보드 칸에 Grafana 그래프**: `dashboard all` 의 칸을 Grafana 패널로 바꾸거나 뒤에 추가 (range 연동, 원래 패널은 `dashboard <이름> raw`). 대시보드 `web/grafana/rkmsiem-overview.json` |
 | 담당자 관리 앱 (`staffdir/`, 별도 서비스 `rkmsiem-staff`, 포트 8090) | RKMSIEM 과 다른 프로세스·DB·관리자 로그인. 담당자 이름·팀·메일·연락처·배정 메일 알림·비활성화·삭제, 변경 기록(연락처 값은 남기지 않음). RKMSIEM 은 연동 키(`RKMSIEM_STAFF_SYNC_KEY` = `STAFF_SYNC_KEYS`)로 `GET /api/sync/people` 를 60초마다 가져가고, 명단이 바뀌면 앱이 `POST /api/staff/hook` 으로 알려 바로 다시 가져감. 앱이 꺼져 있어도 마지막 명단으로 계속 동작. 관리자 만들기: `sudo rkmsiem-staff admin add <이름>` |
 | 담당자 (`dashboard team`) | 담당자 명단(담당자 관리 앱에서 가져옴)·맡은 열린 사건 수·연동 상태·'지금 가져오기'·'담당자 관리 열기'. 명단에 있으면 로그인 계정이 없어도 배정 가능, 아이디가 같으면 로그인 계정과 연결. 관리자는 로그인 계정(역할·임시 비밀번호·비활성화)을 따로 관리, 마지막 관리자는 권한을 내리거나 비활성화할 수 없음. 사건 화면에서 담당자 선택/나에게 배정, 사건 목록 필터(내 사건·미배정·담당자별), 배정되면 명단의 메일·실시간 알림 |
 | 네트워크 토폴로지 (`dashboard topology`) | 서버가 아는 기기 감지(자기 IP·게이트웨이·이웃 ARP·로그·IDS — 스캔 안 함) → 끌어다 놓기, 포트(●)를 끌어 와이어 연결, 이동·이름·종류·IP·메모, 자동 배치, 저장(버전 기록). IP 별 열린 경보 심각도·차단 여부·이벤트를 10초마다 겹쳐 표시 |
@@ -158,14 +159,15 @@ python -m pytest tests test_detector.py --junitxml=reports/test-report.xml
 | `tests/test_p8_ubuntu.py` | 실제 Ubuntu auth.log(22.04·24.04)·journald 형식 · 운영 설정 유효성 · nft/헬퍼 명령 인자 · live 플레이북→실제 명령 · 재시작 시 차단 재적용 · 차단 금지 대역 · 위협 인텔 피드 · 비밀번호 변경 · 자가 점검 |
 | `test_detector.py` | 기존 테스트(수정 없이) — 새 엔진/설정으로도 통과 |
 
-최근 결과: **95 passed, 19 subtests passed** (Python 3.10 · 3.12 · 3.15 각각) · 부하: 로컬에서 약 3,350 events/s (HTTP 배치 500건) · `pyflakes` 경고 0
+최근 결과: **144 passed, 1 skipped** (Python 3.10 · 3.12 · 3.15 각각) · 부하: 로컬에서 약 3,350 events/s (HTTP 배치 500건) · `pyflakes` 경고 0
 
 ## 5. 보안
 
 - 비밀번호 PBKDF2-SHA256 600k · 세션 토큰은 해시로만 저장 · 존재하지 않는 사용자도 같은 검증 시간 · 로그인 속도 제한
 - 모든 API 백엔드 권한 검사(`config/rbac.yaml`) · 거부 시도 감사 기록 · 승인 권한/자기 승인 금지 서버 검증
 - SQL 은 매개변수 바인딩만, 정렬·필터 필드는 허용 목록 · LIKE 와일드카드 이스케이프 · 요청 크기 제한 · JSON Schema 입력 검증
-- 응답 보안 헤더(CSP, X-Frame-Options, nosniff, no-referrer) · 정적 파일 경로 탈출 차단
+- 응답 보안 헤더(CSP, X-Frame-Options, nosniff, no-referrer) · 정적 파일 경로 탈출 차단 · 프레임은 같은 주소(`/grafana/`)만
+- API 토큰(`rkm_…`)은 읽기 권한만, 해시로 저장 · nginx 뒤에서 실제 접속 IP 사용(X-Forwarded-For, 로그인 속도 제한·감사)
 - 로그·원본 조회 시 password/token/authorization 등 마스킹 · werkzeug 요청 로그 억제(티켓 URL 노출 방지)
 - SSE 는 60초·1회용 티켓 (세션 토큰을 URL 에 싣지 않음)
 - 파괴적 조치(차단·계정 비활성화)는 승인 필수, live 모드에서는 설정과 무관하게 항상 승인 · 사내망/허용 목록 IP 차단 거부 · 보호 계정 비활성화 거부
