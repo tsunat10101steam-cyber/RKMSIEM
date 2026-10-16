@@ -129,6 +129,9 @@ def sources(content, store):
             errs.append(f"{s['id']}: file 수집기는 options.path 필요")
         if s["type"] == "http_pull":
             errs += _pull_errors(s)
+        if "view" in s:
+            from .connect import view_errors
+            errs += view_errors(s["id"], s["view"])
     if errs:
         raise SchemaError(errs)
 
@@ -189,13 +192,21 @@ def reputation(content, store):
         raise SchemaError(["의심 점수 기준은 악성 기준보다 낮아야 합니다"])
 
 
-def grafana_panels(content, store):
-    seen = set()
-    for x in content.get("slots") or []:
+def embeds(content, store):
+    from .connect import _path_ok, view_of
+    errs, seen = [], set()
+    srcs = {x["id"]: x for x in (store.get("sources") or {}).get("sources", [])}
+    for i, x in enumerate(content.get("slots") or []):
         if x.get("mode", "replace") == "replace":
             if x["slot"] in seen:
-                raise SchemaError([f"'{x['slot']}' 칸을 바꾸는 Grafana 패널이 둘입니다 — 하나만 (나머지는 '뒤에 추가')"])
+                errs.append(f"'{x['slot']}' 칸을 바꾸는 화면이 둘입니다 — 하나만 (나머지는 '뒤에 추가')")
             seen.add(x["slot"])
+        if not view_of(srcs.get(x["source"])):
+            errs.append(f"{i + 1}번째: 연동 '{x['source']}' 에 화면(view)이 없습니다")
+        if not _path_ok(x["path"].replace("{from}", "0").replace("{to}", "0")):
+            errs.append(f"{i + 1}번째: 경로는 / 로 시작 (.. 금지)")
+    if errs:
+        raise SchemaError(errs)
 
 
 def register(store):
@@ -210,6 +221,6 @@ def register(store):
     store.add_validator("mail", mail)
     store.add_validator("reports", reports)
     store.add_validator("reputation", reputation)
-    store.add_validator("grafana_panels", grafana_panels)
+    store.add_validator("embeds", embeds)
     from .topology import validate as topology
     store.add_validator("topology", topology)

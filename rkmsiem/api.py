@@ -10,6 +10,7 @@ import logging
 import os
 import queue
 import time
+import urllib.parse
 from datetime import datetime
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory, stream_with_context
@@ -118,15 +119,27 @@ def create_app(platform):
         log.exception("unhandled")
         return jsonify({"error": "internal_error"}), 500
 
+    def _cx_frame():                                     # 콘솔이 연동 화면(다른 포트) iframe 을 열 수 있게
+        pub = (s.get("connect.public_origin") or "").rstrip("/")
+        if pub:
+            return pub
+        hn = request.host[:request.host.rindex("]") + 1] if request.host.startswith("[") else request.host.split(":")[0]
+        return f"https://{hn}:{int(s.get('connect.port', 8445) or 8445)}"
+
     @app.after_request
     def _headers(resp):
         resp.headers["X-Content-Type-Options"] = "nosniff"
+        if request.path.startswith("/connect/"):         # 연동 제품의 페이지 — 제품 자체 정책 그대로, 콘솔(같은 호스트)에서만 프레임 허용
+            hn = request.host[:request.host.rindex("]") + 1] if request.host.startswith("[") else request.host.split(":")[0]
+            resp.headers["Content-Security-Policy"] = f"frame-ancestors https://{hn}:*"
+            resp.headers["Referrer-Policy"] = "same-origin"
+            return resp
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
-            "connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            f"connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:; frame-src 'self' {_cx_frame()}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         if request.path.startswith("/api/"):
             resp.headers["Cache-Control"] = "no-store"
         return resp
@@ -694,57 +707,112 @@ def create_app(platform):
             raise ApiError(404, "not_found")
         return jsonify({"ok": True})
 
-    # ------------------------------------------------------------ Grafana 임베드 (nginx 가 /grafana/ 를 Grafana 로 넘김)
-    GF_COOKIE = "rk_gf"
-    GF_DEFAULT_DASH = [{"name": "overview", "uid": "rkmsiem-overview", "title": "RKMSIEM 보안 개요"}]   # 예전 settings.yaml 용
+    # ------------------------------------------------------------ 연동 화면 (connect) — rkmsiem/connect.py
+    from . import connect as cx
 
-    def _gf_cfg():
-        c = s.get("grafana", {}) or {}
-        return {"enabled": bool(c.get("enabled")), "path": "/grafana/", "theme": c.get("theme", "dark"), "user_prefix": c.get("user_prefix", "rk-"),
-                "slots": (p.config.get("grafana_panels") or {}).get("slots", []),
-                "dashboards": [d for d in (c["dashboards"] if "dashboards" in c else GF_DEFAULT_DASH) or [] if isinstance(d, dict) and d.get("uid")]}
+    _cx_origin = _cx_frame
 
-    @app.get("/api/grafana")
+    def _cx_items():
+        out = []
+        for sid, src in p.sources().items():
+            v = cx.view_of(src)
+            if not v and src["type"] != "http_pull":
+                continue
+            c = p.collectors.get(sid)
+            st = c.status() if c else {}
+            out.append({"id": sid, "type": src["type"], "dataset": src.get("dataset"), "enabled": src.get("enabled", True),
+                        "title": (v or {}).get("title") or sid, "kind": (v or {}).get("kind"),
+                        "view": {"home": v.get("home", "/"), "dashboards": v.get("dashboards") or [], "sso": bool(v.get("sso"))} if v else None,
+                        "status": {k: st.get(k) for k in ("state", "alive", "received", "last_event_at", "last_error", "last_poll_at", "last_count")} if st else None})
+        return out
+
+    @app.get("/api/connect")
     @require("metrics:read")
-    def grafana_cfg():
-        return jsonify(_gf_cfg())
+    def connect_list():
+        return jsonify({"origin": _cx_origin(), "items": _cx_items(), "slots": (p.config.get("embeds") or {}).get("slots", [])})
 
-    @app.post("/api/grafana/session")
+    @app.post("/api/connect/session")
     @require("metrics:read")
-    def grafana_session():
-        """iframe 은 Authorization 헤더를 못 보내므로 /grafana/ 경로 전용 HttpOnly 쿠키를 준다."""
-        if not _gf_cfg()["enabled"]:
-            raise ApiError(409, "grafana_disabled", "Grafana 임베드가 꺼져 있습니다 — 서버에서 sudo rkmsiem-grafana")
+    def connect_session():
+        """연동 화면 iframe 은 Authorization 헤더를 못 보내므로 /connect/ 경로 전용 HttpOnly 쿠키를 준다 (세션 토큰과 별개)."""
         if g.user["id"] is None:
             raise ApiError(403, "forbidden", "사람 계정으로만 열 수 있습니다")
-        t, ttl = auth.grafana_ticket(g.user)
-        resp = jsonify({"ok": True, "path": "/grafana/", "expires_in": ttl})
-        resp.set_cookie(GF_COOKIE, t, max_age=ttl, path="/grafana/", httponly=True, samesite="Strict",
+        t, ttl = auth.connect_ticket(g.user)
+        resp = jsonify({"ok": True, "origin": _cx_origin(), "expires_in": ttl})
+        resp.set_cookie(cx.COOKIE, t, max_age=ttl, path="/connect/", httponly=True, samesite="Strict",
                         secure=request.headers.get("X-Forwarded-Proto") == "https" or request.is_secure)
         return resp
 
-    @app.delete("/api/grafana/session")
-    @require(None)
-    def grafana_session_end():
-        auth.drop_grafana_ticket(request.cookies.get(GF_COOKIE))     # 경로가 달라 보통은 안 옴 — 로그아웃이 같이 지움
-        resp = jsonify({"ok": True})
-        resp.delete_cookie(GF_COOKIE, path="/grafana/")
-        return resp
+    @app.get("/api/connect/<sid>/fetch")
+    @require("config:write")
+    def connect_fetch(sid):
+        """설정 화면 도우미 (예: Grafana 대시보드·패널 고르기) — 제품의 JSON 을 서버가 대신 읽음. GET 만, 2MB 까지."""
+        v = cx.view_of(p.sources().get(sid))
+        path = request.args.get("path", "/")
+        if not v:
+            raise ApiError(404, "not_found", "화면(view)이 없는 연동입니다")
+        if not cx._path_ok(path):
+            raise ApiError(400, "bad_path")
+        base, target = cx.upstream_target(v, sid, path.lstrip("/").split("?")[0], urllib.parse.urlsplit(path).query)
+        hdr = cx.build_headers([("Accept", "application/json")], v, g.user, client(), request.host, sid)
+        try:
+            conn, r = cx.fetch(v, "GET", target, hdr, timeout=10)
+            data = r.read(2 * 1024 * 1024 + 1)
+            conn.close()
+        except OSError as e:
+            raise ApiError(502, "upstream_error", f"연동 제품에 접속 실패: {e}")
+        if r.status >= 400 or len(data) > 2 * 1024 * 1024:
+            raise ApiError(502, "upstream_error", f"연동 제품 응답 {r.status}")
+        try:
+            return jsonify({"data": json.loads(data)})
+        except ValueError:
+            raise ApiError(502, "upstream_error", "JSON 이 아닌 응답")
 
-    @app.get("/api/grafana/auth")
-    def grafana_auth():
-        """nginx auth_request 전용 (/grafana/ 요청마다). 200 + X-RK-User/X-RK-Role 이면 통과, 401 이면 막음.
-        nginx 가 원래 요청의 쿠키를 그대로 넘겨 준다. 밖에서 직접 불러도 사용자 이름 말고는 알려 주는 것이 없다."""
-        user = auth.resolve(request.cookies.get(GF_COOKIE), kind="grafana")
+    @app.route("/connect/<sid>/", defaults={"rest": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+    @app.route("/connect/<sid>/<path:rest>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+    def connect_proxy(sid, rest):
+        # nginx 의 연동 화면 포트(8445)를 거친 요청만 — 콘솔과 같은 출처에서 제품 페이지가 열리지 않게
+        if request.headers.get("X-RKMSIEM-Connect") != "1":
+            return Response("연동 화면은 https://<서버>:8445 에서만 열립니다", status=404, mimetype="text/plain")
+        user = auth.resolve(request.cookies.get(cx.COOKIE), kind="connect")
         if not user or user["must_change"] or "metrics:read" not in user["permissions"]:
-            return Response("", status=401)
-        roles = s.get("grafana.roles", {}) or {}
-        role = roles.get(user["role"]) or roles.get("default") or "Viewer"
-        if role not in ("Viewer", "Editor", "Admin"):
-            role = "Viewer"
-        resp = Response("", status=200)
-        resp.headers["X-RK-User"] = s.get("grafana.user_prefix", "rk-") + user["username"]
-        resp.headers["X-RK-Role"] = role
+            return Response("<!doctype html><meta charset=utf-8><body style='background:#111;color:#ccc;font:14px sans-serif;padding:24px'>"
+                            "RKMSIEM 로그인이 필요합니다 — 콘솔에서 <b>connect</b> 로 여세요.</body>", status=401, mimetype="text/html")
+        v = cx.view_of(p.sources().get(sid))
+        if not v:
+            return Response("연동 화면이 없습니다", status=404, mimetype="text/plain")
+        if (request.content_length or 0) > cx.MAX_BODY:
+            return Response("요청이 너무 큽니다", status=413)
+        base, target = cx.upstream_target(v, sid, rest, request.query_string.decode("latin-1"))
+        hdr = cx.build_headers(list(request.headers.items()), v, user, client(), request.host, sid)
+        body = request.get_data() if request.method not in ("GET", "HEAD") else None
+        try:
+            conn, r = cx.fetch(v, request.method, target, hdr, body)
+        except OSError as e:
+            return Response(f"연동 제품에 접속하지 못했습니다: {e}", status=502, mimetype="text/plain")
+        origin = _cx_origin()
+        headers = []
+        for k, val in r.getheaders():
+            lk = k.lower()
+            if lk in cx.HOP or lk == "x-frame-options":
+                continue
+            if lk == "location":
+                val = cx.rewrite_location(val, v, sid, origin)
+            headers.append((k, val))
+
+        def stream():
+            try:
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                conn.close()
+        resp = Response(stream() if request.method != "HEAD" else b"", status=r.status, headers=headers, direct_passthrough=True)
+        cl = r.getheader("Content-Length")
+        if cl and request.method != "HEAD":
+            resp.headers["Content-Length"] = cl
         return resp
 
     # ------------------------------------------------------------ 당겨오기 (다른 시스템 API 를 주기적으로 조회)
@@ -859,7 +927,7 @@ def create_app(platform):
     def audit_verify():
         return jsonify(p.audit.verify())
 
-    CONFIG_KINDS = ("detection", "lists", "sources", "workflow", "rbac", "approval", "assets", "intel", "mail", "reports", "reputation", "topology", "grafana_panels")
+    CONFIG_KINDS = ("detection", "lists", "sources", "workflow", "rbac", "approval", "assets", "intel", "mail", "reports", "reputation", "topology", "embeds")
 
     @app.get("/api/config/<kind>")
     @require("config:read")

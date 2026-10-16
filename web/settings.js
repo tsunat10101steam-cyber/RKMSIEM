@@ -3,7 +3,7 @@
    app.js 보다 먼저 읽히며 app.js 의 공통 도구($, api, esc, toast …)를 호출 시점에 사용한다. */
 "use strict";
 
-const ST_TABS = [["mail", "✉ 메일 서버"], ["people", "⇄ 받는 사람 · 알림"], ["reports", "◷ 보고서 일정"], ["lists", "☰ 목록"], ["rep", "⌕ 평판 (AbuseIPDB)"], ["pull", "⇣ 당겨오기"], ["tokens", "⚿ API 토큰 · Grafana"], ["data", "⌫ 데이터 초기화"]];
+const ST_TABS = [["mail", "✉ 메일 서버"], ["people", "⇄ 받는 사람 · 알림"], ["reports", "◷ 보고서 일정"], ["lists", "☰ 목록"], ["rep", "⌕ 평판 (AbuseIPDB)"], ["pull", "⇣ 당겨오기"], ["tokens", "⚿ API 토큰"], ["data", "⌫ 데이터 초기화"]];
 const ST_PRESETS = {
   gmail: { label: "Gmail", host: "smtp.gmail.com", port: 587, security: "starttls", note: "Google 계정 → 보안 → 2단계 인증 → '앱 비밀번호' 를 만들어 아래 비밀번호에 넣으세요." },
   naver: { label: "Naver", host: "smtp.naver.com", port: 587, security: "starttls", note: "네이버 메일 → 환경설정 → POP3/IMAP 설정에서 SMTP 사용을 켜세요. 2단계 인증이면 애플리케이션 비밀번호." },
@@ -355,10 +355,10 @@ const stCounts = c => Object.entries(c).filter(([k, v]) => v || k === "events").
 // API 토큰 — Prometheus 등 다른 시스템이 /metrics · 조회 API 를 읽을 때 (읽기 전용 권한만, 토큰은 만들 때 한 번만 보임)
 const TOKEN_SCOPE_KO = { "metrics:read": "지표 /metrics (Prometheus)", "alerts:read": "경보 조회", "incidents:read": "사건 조회", "events:read": "이벤트 조회", "collectors:read": "수집기 상태" };
 async function stTokens(box) {
-  let r, gf;
-  try { [r, gf] = await Promise.all([can("users:write") ? api("/api/tokens") : null, api("/api/grafana").catch(() => null)]); }
+  if (!can("users:write")) { box.innerHTML = `<p class="hint">API 토큰은 관리자(users:write)만 관리합니다.</p>`; return; }
+  let r;
+  try { r = await api("/api/tokens"); }
   catch (e) { box.innerHTML = `<div class="err">${esc(errMsg(e))}</div>`; return; }
-  if (!r) { box.innerHTML = `<p class="hint">API 토큰은 관리자(users:write)만 관리합니다.</p><div class="gf-slots"></div>`; return stGfSlots($(".gf-slots", box), gf); }
   const host = location.host, now = Date.now() / 1000;
   const st = t => t.revoked_at ? `<span class="faint">폐기 ${fmtT(t.revoked_at)}</span>` : t.expires_at && t.expires_at < now ? `<span class="c-medium">만료</span>` : `<span class="acc">사용 중</span>`;
   box.innerHTML = `<p class="hint">다른 시스템(Prometheus·스크립트)이 RKMSIEM 을 <b>읽을 때</b> 쓰는 열쇠입니다. 읽기 권한만 줄 수 있고, 토큰 값은 <b>만들 때 한 번만</b> 보입니다 (DB 에는 해시만).
@@ -385,12 +385,7 @@ async function stTokens(box) {
       insecure_skip_verify: true                         # 자체 서명 인증서 — 또는 ca_file: rkmsiem.crt
     static_configs:
       - targets: ['${esc(host)}']</pre>
-    <p class="hint">Prometheus 가 다른 서버면 이 서버 방화벽에서 그 IP 를 허용하세요 (setup 메뉴 '외부 접속 허용'). 대시보드: web/grafana/rkmsiem-overview.json 을 Grafana 에 Import.</p>
-    <h4 style="margin:16px 0 8px;font:700 14px var(--ko)">Grafana 를 콘솔 안에 띄우기</h4>
-    <p class="hint">${gf?.enabled ? `<span class="acc">켜짐</span> — 명령 <span class="link" data-cmd="grafana">grafana</span> 로 엽니다 (RKMSIEM 로그인 그대로, ${esc(gf.path)})`
-      : `꺼짐 — 서버에서 <code>sudo rkmsiem-grafana</code> (Grafana 가 다른 서버면 <code>--upstream http://IP:3000</code>)`}</p>
-    <div class="gf-slots"></div>`;
-  stGfSlots($(".gf-slots", box), gf);
+    <p class="hint">Prometheus 가 다른 서버면 이 서버 방화벽에서 그 IP 를 허용하세요 (setup 메뉴 '외부 접속 허용'). Grafana 용 대시보드: web/grafana/rkmsiem-overview.json (Import).</p>`;
   $('[data-tk="create"]', box).onclick = async e => {
     const name = $(".tk-name", box).value.trim(), scopes = $$(".tk-scope:checked", box).map(x => x.value), exp = $(".tk-exp", box).value;
     if (!name) { shake($(".tk-name", box), 5); return; }
@@ -413,70 +408,62 @@ async function stTokens(box) {
   });
 }
 
-// 대시보드 칸에 Grafana 패널 끼우기 — 저장 대상은 설정 grafana_panels (버전·감사 로그)
-const GF_SLOT_KEYS = ["threat", "kpi", "alerts", "hourly", "top", "targets", "map", "timeline", "incidents", "runs", "ips", "collectors"];
-const GF_RECOMMEND = [{ slot: "hourly", mode: "replace", uid: "rkmsiem-overview", panel_id: 7, title: "열린 경보 (심각도별)", height: 300 },
-  { slot: "collectors", mode: "after", uid: "rkmsiem-overview", panel_id: 8, title: "최근 24시간 이벤트 (출처별)", span: 12, height: 280 }];
-async function gfJson(path) {                                        // 같은 주소의 /grafana/ API (쿠키로 RKMSIEM 로그인 확인)
-  const r = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json" } });
-  if (!r.ok) throw new Error(`Grafana ${r.status}`);
-  return r.json();
-}
-async function stGfSlots(box, gf) {
-  const ro = !can("config:write");
-  let cfg;
-  try { cfg = await api("/api/config/grafana_panels"); } catch (e) { box.innerHTML = ""; return; }
-  const G = { rows: stClone(cfg.content?.slots || []), dash: [], panels: {}, err: "" };
-  if (gf?.enabled) {
-    try { await gfSession(); G.dash = (await gfJson(`${gf.path}api/search?type=dash-db&limit=200`)).map(d => ({ uid: d.uid, title: d.title })); }
-    catch (e) { G.err = `Grafana 대시보드 목록을 못 읽었습니다 (${esc(e.message)}) — uid·패널 번호를 직접 넣으세요`; }
-  }
-  const panelsOf = async uid => {
-    if (!gf?.enabled || !uid || G.panels[uid]) return;
-    try { const d = (await gfJson(`${gf.path}api/dashboards/uid/${encodeURIComponent(uid)}`)).dashboard;
-      G.panels[uid] = (d.panels || []).flatMap(p => p.type === "row" ? (p.panels || []) : [p]).filter(p => p.id && p.type !== "row").map(p => ({ id: p.id, title: p.title || `#${p.id}` })); }
-    catch (e) { G.panels[uid] = []; }
+// 대시보드 칸에 연동 화면 끼우기 — 설정 embeds (버전·감사 로그). 경로의 {from} {to} 는 콘솔 range 로 바뀜
+const EMB_SLOT_KEYS = ["threat", "kpi", "alerts", "hourly", "top", "targets", "map", "timeline", "incidents", "runs", "ips", "collectors"];
+const GF_PANEL_PATH = (uid, id) => `/d-solo/${uid}/?orgId=1&panelId=${id}&theme=dark&from={from}&to={to}&refresh=1m`;
+async function stEmbeds(box) {
+  let cfg, cx;
+  try { [cfg, cx] = await Promise.all([api("/api/config/embeds"), api("/api/connect")]); } catch (e) { box.innerHTML = ""; return; }
+  const ro = SET.ro, views = cx.items.filter(x => x.view);
+  const E = { rows: stClone(cfg.content?.slots || []), dash: {}, panels: {} };
+  const kindOf = id => views.find(x => x.id === id)?.kind;
+  const fetchJ = async (id, path) => (await api(`/api/connect/${encodeURIComponent(id)}/fetch?path=${encodeURIComponent(path)}`)).data;
+  const grafanaHelp = async x => {                                 // Grafana 프리셋 연동이면 대시보드·패널 고르기 (제품별 도우미)
+    if (kindOf(x.source) !== "grafana") return;
+    if (!E.dash[x.source]) try { E.dash[x.source] = (await fetchJ(x.source, "/api/search?type=dash-db&limit=200")).map(d => ({ uid: d.uid, title: d.title })); } catch (e) { E.dash[x.source] = []; }
+    const uid = (x.path.match(/^\/d-solo\/([^/]+)\//) || [])[1];
+    if (uid && !E.panels[uid]) try { const d = (await fetchJ(x.source, `/api/dashboards/uid/${uid}`)).dashboard;
+      E.panels[uid] = (d.panels || []).flatMap(q => q.type === "row" ? (q.panels || []) : [q]).filter(q => q.id && q.type !== "row").map(q => ({ id: q.id, title: q.title || `#${q.id}` })); } catch (e) { E.panels[uid] = []; }
   };
   const draw = async () => {
-    await Promise.all(G.rows.map(x => panelsOf(x.uid)));
-    const slotOpt = v => GF_SLOT_KEYS.map(k => `<option value="${k}" ${k === v ? "selected" : ""}>${esc(PANELS[k].no)} ${esc(PANELS[k].title)}</option>`).join("");
-    const dashIn = x => G.dash.length ? `<select data-f="uid"><option value="">대시보드 선택</option>${G.dash.map(d => `<option value="${esc(d.uid)}" ${d.uid === x.uid ? "selected" : ""}>${esc(d.title)}</option>`).join("")}
-        ${x.uid && !G.dash.some(d => d.uid === x.uid) ? `<option value="${esc(x.uid)}" selected>${esc(x.uid)} (없음?)</option>` : ""}</select>`
-      : `<input data-f="uid" placeholder="대시보드 uid" value="${esc(x.uid || "")}" style="width:160px">`;
-    const panelIn = x => (G.panels[x.uid] || []).length ? `<select data-f="panel_id"><option value="">패널 선택</option>${G.panels[x.uid].map(p => `<option value="${p.id}" ${p.id === x.panel_id ? "selected" : ""}>${esc(p.title)}</option>`).join("")}</select>`
-      : `<input data-f="panel_id" type="number" min="1" placeholder="패널 번호" value="${x.panel_id || ""}" style="width:96px">`;
-    box.innerHTML = `<h4 style="margin:16px 0 8px;font:700 14px var(--ko)">대시보드 칸에 Grafana 그래프 끼우기</h4>
-      <p class="hint">dashboard all 의 칸을 Grafana 패널로 <b>바꾸거나</b> 그 칸 <b>뒤에 추가</b>합니다. 범위(range)를 따라가고 1분마다 새로 고침.
-        바꾼 칸의 원래 패널은 <code>dashboard &lt;이름&gt; raw</code>.${gf?.enabled ? "" : ` <span class="c-medium">Grafana 임베드가 꺼져 있어 지금은 표시되지 않습니다.</span>`}</p>
-      ${G.err ? `<div class="msg c-medium">${G.err}</div>` : ""}
-      <div class="tbl"><table><thead><tr><th>칸</th><th>방식</th><th>Grafana 대시보드</th><th>패널</th><th>제목</th><th>높이</th><th></th></tr></thead><tbody>${G.rows.map((x, i) => `<tr data-i="${i}">
-        <td><select data-f="slot" ${ro ? "disabled" : ""}>${slotOpt(x.slot)}</select></td>
-        <td><select data-f="mode" ${ro ? "disabled" : ""}><option value="replace">바꾸기</option><option value="after" ${x.mode === "after" ? "selected" : ""}>뒤에 추가</option></select></td>
-        <td>${dashIn(x)}</td><td>${panelIn(x)}</td>
-        <td><input data-f="title" maxlength="64" value="${esc(x.title || "")}" placeholder="Grafana 패널 제목" style="width:180px"></td>
+    await Promise.all(E.rows.map(grafanaHelp));
+    const opt = (list, v) => list.map(([k, l]) => `<option value="${esc(k)}" ${k === v ? "selected" : ""}>${esc(l)}</option>`).join("");
+    const pathCell = x => {
+      const uid = (x.path.match(/^\/d-solo\/([^/]+)\//) || [])[1], pid = +((x.path.match(/[?&]panelId=(\d+)/) || [])[1] || 0), ds = E.dash[x.source];
+      const helper = kindOf(x.source) === "grafana" && ds?.length ? `<div class="st-row" style="margin-top:4px"><select data-g="uid"><option value="">Grafana 대시보드</option>${opt(ds.map(d => [d.uid, d.title]), uid)}</select>
+        ${(E.panels[uid] || []).length ? `<select data-g="panel"><option value="">패널</option>${opt(E.panels[uid].map(q => [String(q.id), q.title]), String(pid))}</select>` : ""}</div>` : "";
+      return `<input data-f="path" value="${esc(x.path)}" placeholder="/경로 ({from} {to} 사용 가능)" style="width:100%">${helper}`;
+    };
+    box.innerHTML = `<div class="st-h" style="margin-top:18px">대시보드 칸에 연동 화면 끼우기 <span class="faint">· dashboard all 의 칸을 바꾸거나 그 뒤에 추가 (설정 embeds v${cfg.version ?? "-"})</span></div>
+      ${views.length ? "" : `<div class="faint">화면(view)이 있는 연동이 아직 없습니다 — 위 편집에서 '화면' 칸을 채우고 저장하세요.</div>`}
+      <div class="tbl"><table><thead><tr><th>칸</th><th>방식</th><th>연동</th><th style="min-width:280px">경로</th><th>제목</th><th>높이</th><th></th></tr></thead><tbody>${E.rows.map((x, i) => `<tr data-i="${i}">
+        <td><select data-f="slot" ${ro ? "disabled" : ""}>${opt(EMB_SLOT_KEYS.map(k => [k, `${PANELS[k].no} ${PANELS[k].title}`]), x.slot)}</select></td>
+        <td><select data-f="mode" ${ro ? "disabled" : ""}>${opt([["replace", "바꾸기"], ["after", "뒤에 추가"]], x.mode || "replace")}</select></td>
+        <td><select data-f="source" ${ro ? "disabled" : ""}>${opt(views.map(v => [v.id, v.title]), x.source)}${views.some(v => v.id === x.source) ? "" : `<option selected>${esc(x.source)} (화면 없음)</option>`}</select></td>
+        <td>${pathCell(x)}</td>
+        <td><input data-f="title" maxlength="64" value="${esc(x.title || "")}" style="width:160px"></td>
         <td><input data-f="height" type="number" min="120" max="1200" step="20" value="${x.height || 300}" style="width:76px"></td>
-        <td>${ro ? "" : `<button class="btn danger" data-gx="del">삭제</button>`}</td></tr>`).join("") || `<tr><td colspan="7">${empty("끼운 Grafana 패널이 없습니다.")}</td></tr>`}</tbody></table></div>
-      ${ro ? `<p class="hint">읽기 전용 — config:write 권한 필요</p>` : `<div class="st-row" style="margin-top:8px"><button class="btn" data-gx="add">+ 칸 추가</button><button class="btn" data-gx="rec">추천 배치 (RKMSIEM 보안 개요)</button>
-        <span class="grow"></span><span class="faint">설정 grafana_panels v${cfg.version ?? "-"}</span><button class="btn primary" data-gx="save">저장</button></div>`}`;
-    $$("tr[data-i]", box).forEach(tr => $$("[data-f]", tr).forEach(inp => inp.onchange = async () => {
-      const x = G.rows[+tr.dataset.i], f = inp.dataset.f, v = inp.value.trim();
-      if (f === "panel_id" || f === "height") x[f] = v ? +v : undefined; else x[f] = v;
-      if (f === "uid") delete x.panel_id;
-      if (f === "panel_id" && !x.title) x.title = (G.panels[x.uid] || []).find(p => p.id === +v)?.title || "";
-      if (f === "uid" || f === "panel_id") await draw();
-    }));
-    $$('[data-gx="del"]', box).forEach(b => b.onclick = () => { G.rows.splice(+b.closest("tr").dataset.i, 1); draw(); });
-    const on = (k, fn) => { const b = $(`[data-gx="${k}"]`, box); if (b) b.onclick = fn; };
-    on("add", () => { G.rows.push({ slot: GF_SLOT_KEYS.find(k => !G.rows.some(x => x.slot === k)) || "hourly", mode: "replace", uid: G.dash[0]?.uid || "", height: 300 }); draw(); });
-    on("rec", () => { G.rows = stClone(GF_RECOMMEND); draw(); });
+        <td>${ro ? "" : `<button class="btn danger" data-e="del">삭제</button>`}</td></tr>`).join("") || `<tr><td colspan="7">${empty("끼운 화면이 없습니다.")}</td></tr>`}</tbody></table></div>
+      ${ro || !views.length ? "" : `<div class="st-row" style="margin-top:8px"><button class="btn" data-e="add">+ 칸 추가</button><span class="grow"></span><button class="btn primary" data-e="save">칸 저장</button></div>`}`;
+    $$("tr[data-i]", box).forEach(tr => {
+      const x = E.rows[+tr.dataset.i];
+      $$("[data-f]", tr).forEach(inp => inp.onchange = async () => { const f = inp.dataset.f, v = inp.value.trim();
+        x[f] = f === "height" ? (+v || undefined) : v; if (f === "source") await draw(); });
+      $$("[data-g]", tr).forEach(sel => sel.onchange = async () => {
+        const uid = sel.dataset.g === "uid" ? sel.value : (x.path.match(/^\/d-solo\/([^/]+)\//) || [])[1];
+        const pid = sel.dataset.g === "panel" ? sel.value : "";
+        if (uid) { x.path = GF_PANEL_PATH(uid, pid || 1); if (pid && !x.title) x.title = (E.panels[uid] || []).find(q => String(q.id) === pid)?.title || ""; }
+        await draw(); });
+    });
+    $$('[data-e="del"]', box).forEach(b => b.onclick = () => { E.rows.splice(+b.closest("tr").dataset.i, 1); draw(); });
+    const on = (k, fn) => { const b = $(`[data-e="${k}"]`, box); if (b) b.onclick = fn; };
+    on("add", () => { E.rows.push({ slot: EMB_SLOT_KEYS.find(k => !E.rows.some(x => x.slot === k)) || "hourly", mode: "replace", source: views[0].id, path: views[0].view.home || "/", height: 300 }); draw(); });
     on("save", async e => {
-      const bad = G.rows.findIndex(x => !x.uid || !x.panel_id);
-      if (bad >= 0) { toast(`<span class="err">${bad + 1}번째 줄: 대시보드와 패널을 고르세요</span>`, "critical"); return; }
       e.target.disabled = true;
-      const slots = G.rows.map(x => Object.fromEntries(Object.entries({ slot: x.slot, mode: x.mode || "replace", uid: x.uid, panel_id: +x.panel_id, title: x.title || undefined,
+      const slots = E.rows.map(x => Object.fromEntries(Object.entries({ slot: x.slot, mode: x.mode || "replace", source: x.source, path: x.path || "/", title: x.title || undefined,
         height: x.height ? +x.height : undefined, span: x.span ? +x.span : undefined }).filter(([, v]) => v !== undefined && v !== "")));
-      try { const r2 = await api(`/api/config/grafana_panels?comment=${encodeURIComponent("콘솔 settings 에서 Grafana 칸 변경")}`, { method: "PUT", body: { slots } });
-        toast(`Grafana 칸 저장 → v${r2.version} · <span class="link" data-cmd="dashboard all">dashboard all</span> 에서 확인`); await loadGf(); stGfSlots(box, gf); }
+      try { const r = await api(`/api/config/embeds?comment=${encodeURIComponent("콘솔 settings 에서 대시보드 칸 변경")}`, { method: "PUT", body: { slots } });
+        toast(`대시보드 칸 저장 → v${r.version} · <span class="link" data-cmd="dashboard all">dashboard all</span> 에서 확인`); await loadCx(); stEmbeds(box); }
       catch (x) { toast(`<span class="err">${esc(errMsg(x))}</span>`, "critical"); e.target.disabled = false; }
     });
   };
@@ -523,17 +510,21 @@ async function stData(box) {
 // ================================================================ 당겨오기 (다른 시스템 API 를 주기적으로 조회)
 // 저장 대상은 'sources' 설정 — 이 탭은 type: http_pull 항목만 보여 주고 고친다 (다른 수집기는 그대로)
 const PULL_PRESETS = {
-  prometheus: { label: "Prometheus 경보", note: "Prometheus 의 지금 울리는 경보(firing)를 가져옵니다. CPU 급증(크립토재킹)·서비스 다운 같은 지표 경보가 사건으로 묶입니다.",
+  prometheus: { label: "Prometheus", note: "데이터: 지금 울리는 경보(firing) — CPU 급증(크립토재킹)·서비스 다운 같은 지표 경보가 사건으로 묶입니다. 화면: Prometheus 를 --web.external-url=https://<서버>:8445/connect/prometheus/ 로 실행하면 connect 로 열립니다.",
     src: { id: "prometheus", dataset: "pull.prometheus", options: { url: "http://127.0.0.1:9090/api/v1/alerts", interval_sec: 60, items_path: "data.alerts",
       only_if: { state: ["firing"] }, id_fields: ["labels.alertname", "labels.instance", "activeAt"],
       field_map: { "@timestamp": "activeAt", "rule.name": "labels.alertname", "host.name": "labels.instance", "labels.severity": "labels.severity", "message": "annotations.summary" },
-      static: { "event.action": "external_alert", "event.category": "metric", "observer.product": "prometheus" } } } },
-  grafana: { label: "Grafana 경보", note: "Grafana 경보 규칙(Grafana-managed)의 지금 울리는 경보를 가져옵니다. Grafana → Administration → Service accounts 에서 Viewer 계정의 토큰을 만들어 아래 토큰 칸에. Grafana 가 이 서버에 있으면 주소 그대로(http 127.0.0.1 허용), 다른 서버면 https.",
+      static: { "event.action": "external_alert", "event.category": "metric", "observer.product": "prometheus" } },
+      view: { url: "http://127.0.0.1:9090", home: "/alerts", kind: "prometheus", title: "Prometheus" } } },
+  grafana: { label: "Grafana", note: "데이터: Grafana 경보 규칙의 지금 울리는 경보 — Administration → Service accounts 에서 Viewer 토큰을 만들어 아래 토큰 칸에. 화면: Grafana 설정(grafana.ini [server]·[security]·[auth.proxy] 또는 GF_ 환경 변수)에 root_url = https://<서버>:8445/connect/grafana/ · serve_from_sub_path = true · allow_embedding = true · auth.proxy enabled = true, header_name = X-WEBAUTH-USER, headers = Role:X-WEBAUTH-ROLE, auto_sign_up = true, whitelist = <RKMSIEM 서버 IP> — 그러면 RKMSIEM 로그인으로 들어갑니다 (docs/CONNECT.md).",
     src: { id: "grafana", dataset: "pull.grafana", options: { url: "http://127.0.0.1:3000/api/prometheus/grafana/api/v1/alerts", interval_sec: 60, auth: { type: "bearer" },
       items_path: "data.alerts", only_if: { state: ["Alerting", "alerting", "firing"] }, id_fields: ["labels.__alert_rule_uid__", "labels.alertname", "labels.instance", "activeAt"],
       field_map: { "@timestamp": "activeAt", "rule.name": "labels.alertname", "host.name": "labels.instance", "labels.severity": "labels.severity", "message": "annotations.summary",
         "labels.folder": "labels.grafana_folder" },
-      static: { "event.action": "external_alert", "event.category": "metric", "observer.product": "grafana" } } } },
+      static: { "event.action": "external_alert", "event.category": "metric", "observer.product": "grafana" } },
+      view: { url: "http://127.0.0.1:3000", home: "/d/rkmsiem-overview/?orgId=1&kiosk&theme=dark&from={from}&to={to}", kind: "grafana", title: "Grafana",
+        dashboards: [{ name: "home", title: "홈", path: "/?orgId=1" }, { name: "alerts", title: "경보 규칙", path: "/alerting/list" }],
+        sso: { user_header: "X-WEBAUTH-USER", role_header: "X-WEBAUTH-ROLE", prefix: "rk-", roles: { admin: "Admin", default: "Viewer" } } } } },
   k8s: { label: "Kubernetes 경고 이벤트", note: "API 서버의 Warning 이벤트(이미지 받기 실패·OOM·재시작 반복 등). 읽기 전용 ServiceAccount 토큰을 쓰고, 인증서는 지문으로 고정하세요.",
     src: { id: "k8s-events", dataset: "pull.kubernetes", options: { url: "https://API서버:6443/api/v1/events?fieldSelector=type%3DWarning&limit=500", interval_sec: 60,
       auth: { type: "bearer" }, tls: { fingerprint: "" }, items_path: "items", next_path: "metadata.continue", next_param: "continue", default_now: true,
@@ -558,8 +549,8 @@ function stParseMap(text, list = false) {         // "대상 = 값" 줄 → 객�
 async function stPull(box) {
   try { const r = await api("/api/pull"); PULL.status = Object.fromEntries(r.items.map(x => [x.source.id, x])); } catch (e) { PULL.status = {}; }
   const items = stPullList(), ago = t => t ? fmtT(t) : "-";
-  box.innerHTML = `<p class="hint">다른 시스템의 API 를 <b>주기적으로 조회</b>해 이벤트로 가져옵니다 (Prometheus 경보 · Kubernetes 이벤트 · 사내 JSON API).
-      같은 항목은 한 번만 저장되고, 커서를 쓰면 마지막으로 받은 뒤의 것만 요청합니다. 토큰은 암호화 저장되며 다시 볼 수 없습니다.</p>
+  box.innerHTML = `<p class="hint">외부 서비스를 <b>연동</b>합니다 — API 를 주기적으로 조회해 이벤트로 가져오고(Prometheus · Grafana 경보 · Kubernetes 이벤트 · 사내 JSON API),
+      대시보드가 있는 제품은 <b>화면</b>을 붙여 콘솔 <span class="link" data-cmd="connect">connect</span> 로 엽니다. 같은 항목은 한 번만 저장, 토큰은 암호화 저장(다시 볼 수 없음).</p>
     <div class="pl-list">${items.map(s => { const st = PULL.status[s.id] || {}, c = st.status || {}, o = s.options || {};
       const bad = c.state === "error", run = c.state === "running";
       return `<div class="pl-card ${s.enabled === false ? "off" : ""}" data-id="${esc(s.id)}">
@@ -572,7 +563,8 @@ async function stPull(box) {
       || `<div class="faint">아직 당겨오기 소스가 없습니다.</div>`}</div>
     ${SET.ro ? "" : `<div class="st-h">새로 추가 <span class="faint">· 프리셋을 고르고 주소·토큰만 바꾸면 됩니다</span></div>
       <div class="st-presets">${Object.entries(PULL_PRESETS).map(([k, x]) => `<button class="st-pre" data-pp="${k}">${esc(x.label)}</button>`).join("")}</div>`}
-    <div class="pl-edit"></div>`;
+    <div class="pl-edit"></div><div class="cx-embeds"></div>`;
+  stEmbeds($(".cx-embeds", box));
   if (SET.ro) return;
   $$("[data-pp]", box).forEach(b => b.onclick = () => { const x = PULL_PRESETS[b.dataset.pp], ids = new Set(SET.draft.pull.sources.map(s => s.id));
     let id = x.src.id, n = 1; while (ids.has(id)) id = `${x.src.id}-${++n}`;
@@ -611,6 +603,14 @@ function stPullEditor(box) {
     <div class="st-grid2"><label>필드 매핑 <span class="faint">(정규화 필드 = 응답 경로, 한 줄에 하나)</span><textarea data-f="field_map" rows="6">${esc(stMapText(o.field_map))}</textarea></label>
       <div><label>고정 값 <span class="faint">(필드 = 값)</span><textarea data-f="static" rows="3">${esc(stMapText(o.static))}</textarea></label>
         <label>이 조건만 <span class="faint">(경로 = 값1, 값2)</span><textarea data-f="only_if" rows="2">${esc(stMapText(o.only_if))}</textarea></label></div></div>
+    <div class="st-h" style="margin-top:12px">화면 (connect) <span class="faint">· 대시보드가 있는 제품이면 — 콘솔 connect 로 엶 (https://&lt;서버&gt;:8445, 콘솔과 다른 출처)</span></div>
+    <div class="st-f3"><label>화면 주소 <span class="faint">(비우면 화면 없음 · 이 서버가 대신 접속)</span><input data-f="view_url" value="${esc(s.view?.url || "")}" placeholder="http://127.0.0.1:3000"></label>
+      <label>처음 열 경로 <span class="faint">({from} {to} = range)</span><input data-f="view_home" value="${esc(s.view?.home || "/")}"></label>
+      <label>이름<input data-f="view_title" value="${esc(s.view?.title || "")}" placeholder="${esc(s.id)}"></label></div>
+    <div class="st-f3"><label class="st-sw sm"><input type="checkbox" data-f="view_keep" ${s.view?.keep_prefix === false ? "" : "checked"}><i></i><span>제품이 /connect/${esc(s.id)}/ 아래에서 동작 (권장)</span></label>
+      <label class="st-sw sm"><input type="checkbox" data-f="view_sso" ${s.view?.sso ? "checked" : ""}><i></i><span>RKMSIEM 로그인 넘기기 (헤더 · 제품의 auth proxy)</span></label>
+      <label>사용자 헤더 · 역할 헤더<div class="st-row"><input data-f="sso_user" value="${esc(s.view?.sso?.user_header || "X-WEBAUTH-USER")}"><input data-f="sso_role" value="${esc(s.view?.sso?.role_header || "")}" placeholder="(선택)"></div></label></div>
+    <label>대시보드 바로가기 <span class="faint">(이름 = 경로, 한 줄에 하나 → connect ${esc(s.id)} &lt;이름&gt;)</span><textarea data-f="view_dash" rows="2">${esc((s.view?.dashboards || []).map(d => `${d.name} = ${d.path}`).join("\n"))}</textarea></label>
     <div class="st-row pl-btns"><button class="btn" data-x="test">지금 시험 (저장 안 함)</button><span class="grow"></span>
       <button class="btn" data-x="cancel">닫기</button><button class="btn primary" data-x="apply">${PULL.edit.isNew ? "목록에 추가" : "고친 내용 반영"}</button></div>
     <div class="pl-test">${PULL.test || ""}</div>
@@ -629,6 +629,18 @@ function stPullEditor(box) {
     const cf = val("cursor_field").value.trim(); cf ? op.cursor = { field: cf, start: val("cursor_start").value, ...(val("cursor_param").value.trim() ? { param: val("cursor_param").value.trim() } : {}) } : delete op.cursor;
     op.default_now = val("default_now").checked || undefined; if (!op.default_now) delete op.default_now;
     set("field_map", stParseMap(val("field_map").value)); set("static", stParseMap(val("static").value)); set("only_if", stParseMap(val("only_if").value, true));
+    const vu = val("view_url").value.trim();
+    if (!vu) delete src.view;
+    else {
+      const prev = src.view || {}, titles = Object.fromEntries((prev.dashboards || []).map(d => [d.name, d.title]));
+      const dash = val("view_dash").value.split("\n").map(l => l.match(/^\s*([a-z0-9_-]+)\s*=\s*(\/\S*)\s*$/)).filter(Boolean).map(m => ({ name: m[1], path: m[2], ...(titles[m[1]] ? { title: titles[m[1]] } : {}) }));
+      src.view = { url: vu.replace(/\/+$/, ""), home: val("view_home").value.trim() || "/", ...(prev.kind ? { kind: prev.kind } : {}),
+        ...(val("view_title").value.trim() ? { title: val("view_title").value.trim() } : {}), ...(val("view_keep").checked ? {} : { keep_prefix: false }),
+        ...(dash.length ? { dashboards: dash } : {}), ...(prev.tls ? { tls: prev.tls } : {}) };
+      if (val("view_sso").checked) src.view.sso = { ...(prev.sso || { prefix: "rk-", roles: { admin: "Admin", default: "Viewer" } }), user_header: val("sso_user").value.trim() || "X-WEBAUTH-USER",
+        ...(val("sso_role").value.trim() ? { role_header: val("sso_role").value.trim() } : {}) };
+      if (src.view.sso && !val("sso_role").value.trim()) delete src.view.sso.role_header;
+    }
     return src;
   };
   val("auth_type").onchange = () => { PULL.edit.src = collect(); stPullEditor(box); };
@@ -637,6 +649,7 @@ function stPullEditor(box) {
     const src = collect(), list = SET.draft.pull.sources;
     if (!/^[a-z][a-z0-9_-]*$/.test(src.id)) { shake(val("id"), 5); toast("ID: 영문 소문자로 시작 (숫자·-·_ 가능)", "high"); return; }
     if (!/^https?:\/\/./.test(src.options.url)) { shake(val("url"), 5); toast("주소는 http:// 또는 https:// 로", "high"); return; }
+    if (src.view && !/^https?:\/\/./.test(src.view.url)) { shake(val("view_url"), 5); toast("화면 주소는 http:// 또는 https:// 로", "high"); return; }
     const i = list.findIndex(x => x.id === src.id);
     if (PULL.edit.isNew && i >= 0) { shake(val("id"), 5); toast("같은 ID 가 이미 있습니다", "high"); return; }
     i >= 0 ? list[i] = src : list.push(src);

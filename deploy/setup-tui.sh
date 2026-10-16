@@ -95,7 +95,7 @@ tls_enable() {
 	else printf '✘ HTTPS 켜기 실패 — %s 확인\n' "$log"; return 1; fi
 }
 
-# 다른 PC 에서 접속 허용 (설치 화면용, 창 없음): HTTPS 켜고 고른 곳만 8443·8444 허용
+# 다른 PC 에서 접속 허용 (설치 화면용, 창 없음): HTTPS 켜고 고른 곳만 8443·8444·8445 허용
 open_access() {
 	local nets="$1" out n
 	out="$(tls_enable)" || { printf '%s\n' "$out"; return; }
@@ -103,7 +103,8 @@ open_access() {
 		for n in $nets; do
 			ufw allow from "$n" to any port 8443 proto tcp >/dev/null
 			ufw allow from "$n" to any port 8444 proto tcp >/dev/null
-			out+="${out:+\n}허용: $n → 8443(콘솔) · 8444(담당자 관리)"
+			ufw allow from "$n" to any port 8445 proto tcp >/dev/null
+			out+="${out:+\n}허용: $n → 8443(콘솔) · 8444(담당자 관리) · 8445(연동 화면)"
 		done
 	fi
 	printf '%b\n인증서 지문(SHA-256): %s\n브라우저가 처음 한 번 경고하면 인증서 정보의 지문이 위와 같은지 확인하고 진행하세요.\n' "$out" "$(tls_fp)"
@@ -113,7 +114,7 @@ open_access() {
 allowed_srcs() { ufw status 2>/dev/null | awk '$1 ~ /^8443(\/tcp)?$/ && $2 == "ALLOW" {print $3}' | sort -u; }
 blocked_srcs() {   # 최근 이 서버의 웹 포트로 오다가 방화벽에 막힌 출발지 (많이 온 순)
 	{ tail -n 3000 /var/log/ufw.log 2>/dev/null; journalctl -k -q --since -3d 2>/dev/null | tail -n 3000; } \
-		| grep 'UFW BLOCK' | grep -E 'DPT=(8443|8444|8088|8090) ' | sed -n 's/.* SRC=\([0-9.]*\) .*/\1/p' \
+		| grep 'UFW BLOCK' | grep -E 'DPT=(8443|8444|8445|8088|8090) ' | sed -n 's/.* SRC=\([0-9.]*\) .*/\1/p' \
 		| sort | uniq -c | sort -rn | awk '{print $2}' | head -5
 }
 access_candidates() {   # 한 줄에 "주소<TAB>설명<TAB>ON|OFF"
@@ -306,7 +307,7 @@ do_access() {
 	while IFS=$'\t' read -r a b c; do args+=("$a" "$b" "$c"); done < <(access_candidates)
 	args+=("직접입력" "목록에 없는 IP·대역 직접 입력" OFF)
 	dims
-	sel="$(whiptail --title "외부 접속 허용 (HTTPS 8443·8444)" --separate-output --ok-button "적용" --cancel-button "취소" --checklist \
+	sel="$(whiptail --title "외부 접속 허용 (HTTPS 8443·8444·8445)" --separate-output --ok-button "적용" --cancel-button "취소" --checklist \
 		"접속할 PC 를 스페이스로 고르고 엔터. 노트북에서 접속이 안 됐다면 '막힌 주소' 를 고르세요." "$H" "$W" "$LH" "${args[@]}" 3>&1 1>&2 2>&3)" || return
 	if grep -qx 직접입력 <<<"$sel"; then
 		while :; do
@@ -322,13 +323,13 @@ do_access() {
 		ask_no "외부 접속" "아무것도 고르지 않았습니다. 지금 허용된 곳을 모두 지울까요?\n(지우면 다른 PC 에서 콘솔에 접속할 수 없습니다)" "모두 지우기" "취소" || return
 	fi
 	for n in $now; do grep -qxF "$n" <<<"$nets" && continue
-		if [ "$n" = Anywhere ]; then ufw delete allow 8443/tcp >/dev/null; ufw delete allow 8444/tcp >/dev/null
-		else ufw delete allow from "$n" to any port 8443 proto tcp >/dev/null; ufw delete allow from "$n" to any port 8444 proto tcp >/dev/null; fi
+		if [ "$n" = Anywhere ]; then ufw delete allow 8443/tcp >/dev/null; ufw delete allow 8444/tcp >/dev/null; ufw delete allow 8445/tcp >/dev/null
+		else for pt in 8443 8444 8445; do ufw delete allow from "$n" to any port $pt proto tcp >/dev/null; done; fi
 		out+="허용 해제: $n\n"
 	done
 	for n in $nets; do grep -qxF "$n" <<<"$now" && continue
-		ufw allow from "$n" to any port 8443 proto tcp >/dev/null; ufw allow from "$n" to any port 8444 proto tcp >/dev/null
-		out+="허용 추가: $n → 8443(콘솔) · 8444(담당자 관리)\n"
+		for pt in 8443 8444 8445; do ufw allow from "$n" to any port $pt proto tcp >/dev/null; done
+		out+="허용 추가: $n → 8443(콘솔) · 8444(담당자 관리) · 8445(연동 화면)\n"
 	done
 	t="$(mktemp)"
 	{ printf '%b' "${out:-바뀐 것이 없습니다.\n}"; echo
@@ -351,12 +352,12 @@ do_status() {
 			curl -fsS http://127.0.0.1:8088/readyz >/dev/null 2>&1 && echo "  준비 상태       정상 (readyz)" || echo "  준비 상태       응답 없음 — journalctl -u rkmsiem -n 50"
 			echo; echo "■ 접속 주소"; urls
 			echo; echo "■ HTTPS"
-			if tls_on; then echo "  켜짐 (nginx · 8443 콘솔 · 8444 담당자 관리)"; echo "  인증서 지문 $(tls_fp)"
+			if tls_on; then echo "  켜짐 (nginx · 8443 콘솔 · 8444 담당자 관리 · 8445 연동 화면)"; echo "  인증서 지문 $(tls_fp)"
 			elif http_exposed; then echo "  ⚠ 꺼짐 — 콘솔이 http 로 망에 열려 있음 (비밀번호가 평문). 메뉴 4 로 HTTPS 전환"
 			else echo "  꺼짐 (콘솔은 이 서버 안에서만)"; fi
-			echo; echo "■ 듣는 포트"; ss -ltn 2>/dev/null | awk 'NR > 1 && $4 ~ /:(8088|8090|8443|8444)$/ {print "  " $4}'
-			echo; echo "■ 방화벽 (8443·8444 · 예전 8088·8090)"
-			if ufw_active; then ufw status | awk '$1 ~ /^(8088|8090|8443|8444)(\/tcp)?$/ {print "  " $0}'; else echo "  ufw 꺼짐 (모든 곳에서 접속 가능)"; fi
+			echo; echo "■ 듣는 포트"; ss -ltn 2>/dev/null | awk 'NR > 1 && $4 ~ /:(8088|8090|8443|8444|8445)$/ {print "  " $4}'
+			echo; echo "■ 방화벽 (8443·8444·8445 · 예전 8088·8090)"
+			if ufw_active; then ufw status | awk '$1 ~ /^(8088|8090|8443|8444|8445)(\/tcp)?$/ {print "  " $0}'; else echo "  ufw 꺼짐 (모든 곳에서 접속 가능)"; fi
 			echo; echo "■ 차단 테이블"; nft list set inet rkmsiem blocklist4 2>/dev/null | sed -n 's/^\s*elements = /  차단 중: /p' | head -3
 			nft list table inet rkmsiem >/dev/null 2>&1 && echo "  table inet rkmsiem 있음" || echo "  table inet rkmsiem 없음"
 			echo; echo "■ 버전"; echo "  $(dpkg-query -W -f='패키지 ${Version}' rkmsiem 2>/dev/null || echo "원본 $SRC")"

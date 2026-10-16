@@ -337,21 +337,17 @@ class AuthService:
     def logout(self, token):
         r = self.db.one("SELECT user_id FROM tokens WHERE token_hash=? AND kind='session'", (_sha(token),))
         self.db.execute("DELETE FROM tokens WHERE token_hash=?", (_sha(token),))
-        if r:                                                # 임베드 Grafana 출입증도 같이 무효화
-            self.db.execute("DELETE FROM tokens WHERE user_id=? AND kind='grafana'", (r["user_id"],))
+        if r:                                                # 연동 화면 출입증도 같이 무효화
+            self.db.execute("DELETE FROM tokens WHERE user_id=? AND kind='connect'", (r["user_id"],))
 
-    def grafana_ticket(self, user):
-        """/grafana/ 전용 쿠키 값 — 세션 토큰과 별개라 Grafana 쪽에 새어도 RKMSIEM API 에는 못 씀."""
+    def connect_ticket(self, user):
+        """/connect/ 전용 쿠키 값 — 세션 토큰과 별개라 연동 제품 쪽에 새어도 RKMSIEM API 에는 못 씀."""
         t = secrets.token_urlsafe(32)
-        ttl = int(self.settings.get("grafana.ticket_ttl_sec", 28800) or 28800)
-        self.db.execute("DELETE FROM tokens WHERE user_id=? AND kind='grafana' AND expires_at < ?", (user["id"], time.time()))
+        ttl = int(self.settings.get("connect.ticket_ttl_sec", 28800) or 28800)
+        self.db.execute("DELETE FROM tokens WHERE user_id=? AND kind='connect' AND expires_at < ?", (user["id"], time.time()))
         self.db.execute("INSERT INTO tokens (token_hash, user_id, kind, expires_at, created_at) VALUES (?,?,?,?,?)",
-                        (_sha(t), user["id"], "grafana", time.time() + ttl, time.time()))
+                        (_sha(t), user["id"], "connect", time.time() + ttl, time.time()))
         return t, ttl
-
-    def drop_grafana_ticket(self, ticket):
-        if ticket:
-            self.db.execute("DELETE FROM tokens WHERE token_hash=? AND kind='grafana'", (_sha(ticket),))
 
     def stream_ticket(self, user):
         t = secrets.token_urlsafe(24)

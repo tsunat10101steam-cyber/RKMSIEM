@@ -800,52 +800,70 @@ panel("team", "21", "담당자", "TEAM", ["team", "users", "담당자"], "담당
   (el, live) => renderTeam(el, live), { liveSkip: true, noOverview: true });
 panel("topology", "22", "네트워크 토폴로지", "TOPOLOGY", ["topology", "topo", "network", "토폴로지", "네트워크"], "감지한 기기를 끌어다 놓고 와이어로 연결 · 경보·차단 상태 겹쳐 보기 (web/topology.js)", 12,
   (el, live) => renderTopology(el, live), { liveSkip: true, noOverview: true });
-panel("grafana", "23", "Grafana", "GRAFANA", ["grafana", "gf", "그라파나"], "Grafana 대시보드를 콘솔 안에서 — RKMSIEM 로그인 그대로 (grafana <이름|uid>)", 12, async (el, live, arg) => {
-  const cfg = await api("/api/grafana");
-  if (!cfg.enabled) {
-    el.innerHTML = `<div class="msg c-high">Grafana 임베드가 꺼져 있습니다.</div>
-      <div class="hint">서버에서 한 번: <code>sudo rkmsiem-grafana</code> (Grafana 가 다른 서버면 <code>--upstream http://IP:3000</code>)<br>
-      Grafana 가 이 서버의 <b>https://…:8443/grafana/</b> 로 붙고 RKMSIEM 로그인으로 들어갑니다 (자세한 내용: docs/GRAFANA.md).</div>`;
+// ---------------------------------------------------------------- 연동 (connect) — 당겨오기 소스와 그 화면(view)
+// 화면은 콘솔과 다른 출처(https://<서버>:8445)에서 열림 — 연동 제품 페이지가 콘솔 로그인 토큰에 닿지 못하게 (rkmsiem/connect.py)
+let cxExp = 0;
+async function cxSession(force) {                                   // /connect/ 전용 쿠키 — 만료 10분 전이면 새로
+  if (!force && Date.now() / 1000 < cxExp - 600) return;
+  const r = await api("/api/connect/session", { method: "POST" });
+  cxExp = Date.now() / 1000 + r.expires_in;
+}
+async function loadCx() {
+  S.cx = null;
+  if (!can("metrics:read")) return;
+  try { S.cx = await api("/api/connect"); } catch (e) { /* 권한·구버전 */ }
+}
+const cxUrl = (id, path) => `${S.cx.origin}/connect/${encodeURIComponent(id)}/${String(path || "/").replace(/^\//, "")}`;
+function cxRange(path) {
+  const R = S.range, f = R.from == null ? "now-24h" : Math.round(R.from * 1000), t = R.from == null ? "now" : Math.round(R.to * 1000);
+  return String(path).replaceAll("{from}", f).replaceAll("{to}", t);
+}
+const cxFrame = (src, title, h) => `<iframe class="cx-frame" src="${esc(src)}" title="${esc(title)}" loading="lazy" referrerpolicy="same-origin"
+  style="width:100%;height:${h};border:1px solid var(--line, #333);border-radius:6px;background:#111217"></iframe>`;
+panel("connect", "23", "연동", "CONNECT", ["connect", "연동", "cx"], "연동한 외부 서비스(당겨오기)와 그 대시보드 — connect <연동> [대시보드] 로 화면 열기", 12, async (el, live, arg) => {
+  S.cx = await api("/api/connect");
+  const items = S.cx.items, [want, dash] = String(arg || "").trim().split(/\s+/);
+  if (!items.length) {
+    el.innerHTML = `<div class="empty-state">연동한 서비스가 없습니다.</div>
+      <div class="hint">${can("config:write") ? `<span class="link" data-cmd="dashboard settings pull">settings → 당겨오기</span> 에서 추가하세요 (프리셋: Prometheus · Grafana · Kubernetes · JSON API). 화면(대시보드)이 있는 제품은 '화면' 칸을 채우면 여기서 열립니다.`
+        : "관리자가 settings → 당겨오기 에서 추가하면 여기에 나타납니다."}</div>`;
     return;
   }
-  const want = String(arg || "").trim(), ds = cfg.dashboards;
-  const pick = ds.find(d => d.name === want || d.uid === want) || (want && /^[\w-]{1,64}$/.test(want) ? { name: want, uid: want } : ds[0]);
-  const src = pick ? `${cfg.path}d/${encodeURIComponent(pick.uid)}/?orgId=1&kiosk&theme=${encodeURIComponent(cfg.theme)}` : `${cfg.path}?kiosk&theme=${encodeURIComponent(cfg.theme)}`;
-  await gfSession(true);                                          // /grafana/ 전용 쿠키 (iframe 은 토큰 헤더를 못 보냄)
-  el.innerHTML = `<div class="meta-line"><span>대시보드 ${ds.map(d => `<span class="link${d === pick ? " acc" : ""}" data-cmd="grafana ${esc(d.name)}">${esc(d.title || d.name)}</span>`).join(" · ") || "-"}</span>
-      <span><a class="link" href="${esc(src.replace(/[?&]kiosk/, ""))}" target="_blank" rel="noopener">↗ 새 창으로</a></span><span class="dim">Grafana 계정: ${esc(cfg.user_prefix || "rk-")}${esc(S.me.username)}</span></div>
-    <iframe class="gf-frame" src="${esc(src)}" title="Grafana" referrerpolicy="same-origin" style="width:100%;height:calc(100vh - 300px);min-height:420px;border:1px solid var(--line, #333);border-radius:6px;background:#111217"></iframe>`;
+  const pick = items.find(x => x.id === want) || (!want ? items.find(x => x.view) : null);
+  if (want && !pick) { el.innerHTML = `<div class="msg c-high">연동 '${esc(want)}' 이 없습니다.</div>`; }
+  const st = x => { const s = x.status || {};
+    if (x.enabled === false) return `<span class="faint">수집 꺼짐</span>`;
+    if (s.last_error) return `<span class="c-critical" title="${esc(s.last_error)}">오류</span>`;
+    return s.alive || s.state === "running" ? `<span class="acc">● 연결됨</span>` : `<span class="c-medium">${esc(s.state || "대기")}</span>`; };
+  const card = x => `<div class="cx-card${x === pick ? " on" : ""}" style="border:1px solid var(--line, #333);border-radius:6px;padding:10px 12px;min-width:220px;flex:1 1 220px;${x === pick ? "border-color:var(--acc, #3f6)" : ""}">
+      <div><b>${esc(x.title)}</b> <span class="faint">${esc(x.kind || x.type)}</span> ${st(x)}</div>
+      <div class="dim" style="font-size:12px;margin:4px 0">${x.type === "http_pull" ? `받은 이벤트 ${x.status?.received ?? 0}건${x.status?.last_poll_at ? ` · 마지막 조회 ${fmtT(x.status.last_poll_at)}` : ""}` : esc(x.dataset || "")}</div>
+      <div>${x.view ? `<span class="link" data-cmd="connect ${esc(x.id)}">▣ 화면</span>${x.view.dashboards.map(d => ` · <span class="link" data-cmd="connect ${esc(x.id)} ${esc(d.name)}">${esc(d.title || d.name)}</span>`).join("")}`
+        : `<span class="faint">화면 없음 (데이터만)</span>`} · <span class="link" data-cmd="search source=${esc(x.id)}">이벤트</span>
+        ${can("config:write") ? ` · <span class="link" data-cmd="dashboard settings pull">설정</span>` : ""}</div></div>`;
+  el.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px">${items.map(card).join("")}</div><div class="cx-view"></div>`;
+  if (!pick?.view) { if (pick) $(".cx-view", el).innerHTML = `<div class="hint">'${esc(pick.title)}' 은 데이터만 연동되어 있습니다 — 화면을 보려면 당겨오기 설정의 '화면' 칸을 채우세요.</div>`; return; }
+  const d = pick.view.dashboards.find(x => x.name === dash), path = d ? d.path : pick.view.home;
+  await cxSession(true);
+  const src = cxUrl(pick.id, cxRange(path));
+  $(".cx-view", el).innerHTML = `<div class="meta-line"><span><b>${esc(pick.title)}</b> ${esc(d?.title || d?.name || "")}</span>
+      <span><a class="link" href="${esc(src)}" target="_blank" rel="noopener">↗ 새 창으로</a></span>
+      ${pick.view.sso ? `<span class="dim">RKMSIEM 로그인으로 들어감</span>` : `<span class="dim">제품 자체 로그인</span>`}</div>
+    ${cxFrame(src, pick.title, "calc(100vh - 340px);min-height:420px")}`;
 }, { liveSkip: true, noOverview: true, perm: "metrics:read" });
 
-// ---------------------------------------------------------------- Grafana 패널을 대시보드 칸에 (settings → API 토큰 · Grafana → 콘솔 칸)
-let gfExp = 0;
-async function gfSession(force) {                                   // /grafana/ 전용 쿠키 — 만료 10분 전이면 새로
-  if (!force && Date.now() / 1000 < gfExp - 600) return;
-  const r = await api("/api/grafana/session", { method: "POST" });
-  gfExp = Date.now() / 1000 + r.expires_in;
-}
-async function loadGf() {
-  S.gf = null;
-  if (!can("metrics:read")) return;
-  try { const g = await api("/api/grafana"); S.gf = g.enabled ? g : null; } catch (e) { /* 꺼짐·구버전 */ }
-}
-const gfOver = (key, mode) => (S.gf?.slots || []).map((o, i) => ({ ...o, i })).filter(o => o.slot === key && (o.mode || "replace") === mode);
-function gfSrc(o) {
-  const R = S.range, f = R.from == null ? "now-24h" : Math.round(R.from * 1000), t = R.from == null ? "now" : Math.round(R.to * 1000);
-  return `${S.gf.path}d-solo/${encodeURIComponent(o.uid)}/?orgId=1&panelId=${+o.panel_id}&theme=${encodeURIComponent(S.gf.theme || "dark")}&from=${f}&to=${t}&refresh=1m`;
-}
-const gfShell = (o, key) => ({ no: o.mode === "after" ? "G" : PANELS[key].no, title: o.title || "Grafana", en: "GRAFANA", span: o.span || PANELS[key].span });
-panel("gfslot", "G", "Grafana", "GRAFANA", ["gfslot"], "대시보드 칸에 끼운 Grafana 패널", 6, async (el, live, arg) => {
-  const o = S.gf?.slots?.[arg ?? el.closest(".panel")?.dataset.gf];
-  if (!o) { el.innerHTML = `<div class="dim">Grafana 패널 설정이 바뀌었습니다 — 다시 여세요.</div>`; return; }
-  const src = gfSrc(o), fr = $("iframe", el);
-  if (fr && fr.getAttribute("src") === src) { if (Date.now() / 1000 > gfExp - 600) await gfSession(); return; }   // 그대로 (Grafana 가 1분마다 새로 고침)
-  await gfSession();
-  const solo = !!el.closest(".panel.solo"), h = solo ? `max(${o.height || 300}px, calc(100vh - 300px))` : `${o.height || 300}px`;
-  el.innerHTML = `<iframe class="gf-frame" src="${esc(src)}" title="${esc(o.title || "Grafana")}" loading="lazy" referrerpolicy="same-origin"
-      style="width:100%;height:${h};border:0;border-radius:4px;background:transparent"></iframe>
-    <div class="faint" style="font-size:11px;margin-top:4px">Grafana · ${esc(o.uid)} #${+o.panel_id}${o.mode !== "after" ? ` · <span class="link" data-cmd="dashboard ${esc(PANELS[o.slot].aliases[0])} raw">원래 패널</span>` : ""}
-      · <a class="link" href="${esc(S.gf.path)}d/${encodeURIComponent(o.uid)}/?orgId=1&viewPanel=${+o.panel_id}" target="_blank" rel="noopener">↗</a></div>`;
+// 대시보드 칸에 연동 화면 끼우기 (settings → 당겨오기 → 대시보드 칸) — 설정 embeds
+const cxOver = (key, mode) => (S.cx?.slots || []).map((o, i) => ({ ...o, i })).filter(o => o.slot === key && (o.mode || "replace") === mode && S.cx.items.some(x => x.id === o.source && x.view));
+const cxShell = (o, key) => ({ no: o.mode === "after" ? "↗" : PANELS[key].no, title: o.title || o.source, en: "CONNECT", span: o.span || PANELS[key].span });
+panel("embed", "↗", "연동 화면", "CONNECT", ["embed"], "대시보드 칸에 끼운 연동 화면", 6, async (el, live, arg) => {
+  const o = S.cx?.slots?.[arg ?? el.closest(".panel")?.dataset.cx];
+  if (!o) { el.innerHTML = `<div class="dim">칸 설정이 바뀌었습니다 — 다시 여세요.</div>`; return; }
+  const src = cxUrl(o.source, cxRange(o.path)), fr = $("iframe", el);
+  if (fr && fr.getAttribute("src") === src) { if (Date.now() / 1000 > cxExp - 600) await cxSession(); return; }   // 그대로 (제품이 스스로 새로 고침)
+  await cxSession();
+  const solo = !!el.closest(".panel.solo");
+  el.innerHTML = cxFrame(src, o.title || o.source, solo ? `max(${o.height || 300}px, calc(100vh - 300px))` : `${o.height || 300}px`).replace("border:1px solid var(--line, #333)", "border:0") +
+    `<div class="faint" style="font-size:11px;margin-top:4px">연동 <span class="link" data-cmd="connect ${esc(o.source)}">${esc(o.source)}</span>${o.mode !== "after" ? ` · <span class="link" data-cmd="dashboard ${esc(PANELS[o.slot].aliases[0])} raw">원래 패널</span>` : ""}</div>`;
 }, { noOverview: true, perm: "metrics:read" });
 
 // ---------------------------------------------------------------- 승인 폼
@@ -980,13 +998,13 @@ async function rerender(live) {
   if (v.kind === "run") await showRun(v.arg, true);
 }
 async function showPanel(key, arg) {
-  const g = arg !== "raw" && gfOver(key, "replace")[0];            // 이 칸을 Grafana 패널로 바꿔 둔 경우
+  const g = arg !== "raw" && cxOver(key, "replace")[0];            // 이 칸을 연동 화면으로 바꿔 둔 경우
   if (g) {
-    out.insertAdjacentHTML("beforeend", `<div class="crumb">✂ dashboard all › <b>${PANELS[key].no} ${esc(g.title || "Grafana")}</b> (Grafana) 만 잘라서 표시</div>`);
-    const sec = panelShell(gfShell(g, key), true); sec.dataset.gf = g.i;
+    out.insertAdjacentHTML("beforeend", `<div class="crumb">✂ dashboard all › <b>${PANELS[key].no} ${esc(g.title || g.source)}</b> (연동 ${esc(g.source)}) 만 잘라서 표시</div>`);
+    const sec = panelShell(cxShell(g, key), true); sec.dataset.cx = g.i;
     if (M) await sleep(250);
-    S.view = { kind: "panel", key: "gfslot", arg: g.i };
-    await renderPanel("gfslot", $(".panel-body", sec), false, g.i);
+    S.view = { kind: "panel", key: "embed", arg: g.i };
+    await renderPanel("embed", $(".panel-body", sec), false, g.i);
     return;
   }
   if (arg === "raw") arg = "";
@@ -1003,14 +1021,14 @@ function showAll() {
   S.view = { kind: "all" };
   const items = [];
   ALL.forEach(k => {
-    const g = gfOver(k, "replace")[0];
+    const g = cxOver(k, "replace")[0];
     if (g) items.push([g, k]); else if (!PANELS[k].perm || can(PANELS[k].perm)) items.push([null, k]);
-    gfOver(k, "after").forEach(a => items.push([a, k]));
+    cxOver(k, "after").forEach(a => items.push([a, k]));
   });
   items.forEach(([g, slot]) => {
-    const k = g ? "gfslot" : slot, p = g ? gfShell(g, slot) : PANELS[k];
+    const k = g ? "embed" : slot, p = g ? cxShell(g, slot) : PANELS[k];
     const sec = panelShell(p, false, grid, false); sec.classList.add("lazy"); sec.dataset.key = k;
-    if (g) sec.dataset.gf = g.i;
+    if (g) sec.dataset.cx = g.i;
     let done = false;
     const go = () => { if (done) return; done = true; sec.classList.remove("lazy");
       if (M) M.animate(sec, { opacity: [0, 1], y: [40, 0] }, { type: "spring", stiffness: 120, damping: 18 }); renderPanel(k, $(".panel-body", sec), false); };
@@ -1019,7 +1037,7 @@ function showAll() {
 }
 
 // ================================================================ 명령
-const ORDER = ["threat", "kpi", "alerts", "hourly", "top", "targets", "timeline", "map", "ips", "incidents", "runs", "rules", "collectors", "events", "audit", "blocklist", "doctor", "automation", "mail", "settings", "team", "topology", "grafana"];
+const ORDER = ["threat", "kpi", "alerts", "hourly", "top", "targets", "timeline", "map", "ips", "incidents", "runs", "rules", "collectors", "events", "audit", "blocklist", "doctor", "automation", "mail", "settings", "team", "topology", "connect"];
 const ALL = ["threat", "kpi", "alerts", "hourly", "top", "targets", "map", "timeline", "incidents", "runs", "ips", "collectors"];
 const ALIAS = {};
 ORDER.forEach(k => PANELS[k].aliases.forEach(a => ALIAS[a] = k));
@@ -1037,6 +1055,7 @@ function helpHtml() {
     <code>report [6h|24h|7d|30d|all]</code><span>기간 요약 보고서 PDF 받기 (생략하면 현재 range)</span>
     <code>mfa · mfa setup · mfa off</code><span>2단계 인증(OTP 앱) 상태 / 켜기 (QR 코드) / 끄기</span>
     <code>ssh [계정@]IP</code><span>웹 터미널 — 토폴로지에서 SIEM 과 와이어로 이어진 기기에 SSH 접속 (권한 terminal:use). ssh 만 치면 접속 가능한 기기 목록</span>
+    <code>connect [연동] [대시보드]</code><span>연동한 외부 서비스 목록 · 화면 열기 (예: connect grafana) — 추가는 settings → 당겨오기</span>
     <code>rep &lt;IP&gt;</code><span>IP 평판 조회 — AbuseIPDB 점수·신고 수 + 공개 차단 목록 피드</span>
     <code>range 6h|24h|7d|30d|all|data</code><span>집계 시간 범위 (data = 최신 데이터 기준 24시간, 기본)</span>
     <div class="h">계정 · 기타</div>
@@ -1220,7 +1239,7 @@ async function afterLogin(announce) {
   $("#who").textContent = `${S.me.username} (${S.me.role})`;
   $("#ps").innerHTML = `${esc(S.me.username)}@rkmsiem:<span class="path">~</span>$`;
   const md = $("#mode"); md.textContent = S.me.mode.toUpperCase(); md.className = `mode ${S.me.mode === "live" ? "live" : ""}`;
-  await Promise.all([loadOverview(), loadGf()]);
+  await Promise.all([loadOverview(), loadCx()]);
   openStream();
   if (announce) out.insertAdjacentHTML("beforeend", `<div class="msg acc">${esc(S.me.username)} 님 로그인 (${esc(S.me.role)}). <span class="dim">dashboard all 또는 아래 버튼으로 시작하세요.</span></div>`);
   if (announce && !S.me.mfa_enabled && can("terminal:use")) out.insertAdjacentHTML("beforeend", `<div class="msg c-medium">2단계 인증이 꺼져 있습니다 — <span class="link" data-cmd="mfa setup">mfa setup</span> 으로 켜세요 (웹 터미널은 2단계 인증 계정만 사용 가능)</div>`);
@@ -1294,7 +1313,7 @@ input.addEventListener("keydown", e => {
     if (m.length === 1) input.value = m[0]; else if (m.length > 1) out.insertAdjacentHTML("beforeend", `<div class="msg dim">${m.map(esc).join("    ")}</div>`); }
 });
 $("#term").addEventListener("click", e => { if (booted && !e.target.closest("input,button,a,select,table,.crow,.hrow,.col,.tl-row,svg,.globe-box,.link,[data-cmd],.au-grid,.au-bar,.au-tool") && !getSelection().toString()) input.focus(); });
-$("#chips").innerHTML = ["all", "threat", "incidents", "runs", "map", "alerts", "hourly", "top", "ips", "collectors", "rules", "events", "automation", "mail", "settings", "team", "topology", "grafana"].map(k => k === "all"
+$("#chips").innerHTML = ["all", "threat", "incidents", "runs", "map", "alerts", "hourly", "top", "ips", "collectors", "rules", "events", "automation", "mail", "settings", "team", "topology", "connect"].map(k => k === "all"
   ? `<button class="chip" data-cmd="dashboard all">all<span class="ko">전체</span></button>` : `<button class="chip" data-cmd="dashboard ${PANELS[k].aliases[0]}">${PANELS[k].aliases[0]}<span class="ko">${esc(PANELS[k].title)}</span></button>`).join("") +
   `<button class="chip" data-cmd="help">help</button>`;
 $$(".chip").forEach(b => b.onclick = async () => { if (busy || loginStep) return; const cmd = b.dataset.cmd; input.value = ""; input.focus();
