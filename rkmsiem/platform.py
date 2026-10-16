@@ -45,6 +45,8 @@ class Platform:
         self.alerts = AlertStore(self.db, self.metrics)
         self.incidents = IncidentService(self.db, self.config, self.audit, self.bus, self.metrics)
         self.soar = PlaybookEngine(self.db, self.config, self.audit, self.incidents, settings, self.bus, self.metrics)
+        from .agents import Agents
+        self.agents = self.soar.agents = Agents(self.db, self.audit, self.bus)
         self.response = Response(settings)
         from . import normalize
         normalize.configure_self(commands=[((settings.get("response") or {}).get("accounts") or {}).get("helper") or "/usr/local/lib/rkmsiem/rkmsiem-account"])

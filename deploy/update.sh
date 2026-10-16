@@ -48,6 +48,12 @@ if grep -q '^RKMSIEM_API__HOST=0\.0\.0\.0$' /etc/rkmsiem/rkmsiem.env && [ ! -e /
 fi
 # HTTPS 사용 중이고 nginx 설정이 예전 형식(연동 화면 8445 없음)이면 다시 만듦 — 인증서·방화벽 허용은 그대로
 sed -i '/^RKMSIEM_GRAFANA__ENABLED=/d' /etc/rkmsiem/rkmsiem.env 2>/dev/null || true      # v39~40 의 Grafana 임베드 설정
+# 인증서 지문을 앱에 알려 줌 (콘솔의 에이전트 설치 명령용 · 공개 값)
+if [ -s /etc/rkmsiem/tls/rkmsiem.crt ]; then
+	FPR="$(openssl x509 -in /etc/rkmsiem/tls/rkmsiem.crt -noout -fingerprint -sha256 | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f')"
+	sed -i '/^RKMSIEM_TLS_FINGERPRINT=/d' /etc/rkmsiem/rkmsiem.env && echo "RKMSIEM_TLS_FINGERPRINT=$FPR" >> /etc/rkmsiem/rkmsiem.env
+	systemctl restart rkmsiem 2>/dev/null || true
+fi
 if [ -e /etc/nginx/sites-enabled/rkmsiem ] && ! grep -q 'X-RKMSIEM-Connect 1' /etc/nginx/sites-available/rkmsiem 2>/dev/null; then
 	echo "==> nginx 설정 갱신 (연동 화면 https 8445 추가)"
 	"$SRC/deploy/tls.sh" | sed -n '/==> 방화벽/,/==> 서비스/p' | grep -v '==> 서비스' || echo "  ! nginx 갱신 실패 — sudo $SRC/deploy/tls.sh"

@@ -266,3 +266,50 @@ def enable_account(ctx, inp):
             raise _resp_err(e)
     ctx.db.execute("UPDATE account_state SET disabled=0, updated_at=? WHERE account=?", (time.time(), name))
     return out
+
+
+# ------------------------------------------------------------------ 원격 조치 (대상 서버의 rkmsiem-agent 가 실행)
+def _remote(ctx, action, inp, keys):
+    from ..agents import ACTIONS as RA, AgentError
+    if not ctx.agents:
+        raise ActionError("원격 조치 에이전트 기능이 없습니다")
+    agent = str(inp.get("agent") or "")
+    params = {k: inp.get(k) for k in keys if inp.get(k) not in (None, "")}
+    what = f"{RA[action][0]} {agent}:{' '.join(str(v) for v in params.values())}"
+    if ctx.mode == "simulate":
+        a = ctx.agents.get(agent, detail=False)
+        if not a:
+            raise ActionError(f"에이전트 '{agent}' 이 없습니다")
+        if action not in a["allow"]:
+            raise ActionError(f"'{agent}' 서버의 에이전트 설정(ALLOW)에서 '{RA[action][0]}' 을 허용하지 않았습니다")
+        return {"simulated": True, "would": what, "agent": agent}
+    try:
+        jid = ctx.agents.submit(agent, action, params, ctx.actor, inp.get("reason"), ctx.incident_id)
+    except AgentError as e:
+        raise ActionError(str(e))
+    r = ctx.agents.wait(jid, float(inp.get("timeout_sec") or 45))
+    if r["state"] == "succeeded":
+        return dict(json.loads(r["result"] or "{}"), job_id=jid, agent=agent)
+    if r["state"] == "failed":
+        raise ActionError(f"{what} 실패: {r['error']}")
+    raise TransientError(f"{what}: 에이전트 응답 없음 (작업 #{jid} {r['state']})")
+
+
+@action("container_stop", destructive=True, description="원격: 컨테이너 중지 (rkmsiem-agent)")
+def container_stop(ctx, inp):
+    return _remote(ctx, "container_stop", inp, ("container",))
+
+
+@action("container_restart", destructive=True, description="원격: 컨테이너 재시작 (rkmsiem-agent)")
+def container_restart(ctx, inp):
+    return _remote(ctx, "container_restart", inp, ("container",))
+
+
+@action("process_kill", destructive=True, description="원격: 프로세스 종료 (rkmsiem-agent · PID 재사용 확인)")
+def process_kill(ctx, inp):
+    return _remote(ctx, "process_kill", inp, ("pid", "start", "expect"))
+
+
+@action("service_restart", destructive=True, description="원격: 서비스 재시작 (rkmsiem-agent)")
+def service_restart(ctx, inp):
+    return _remote(ctx, "service_restart", inp, ("service",))

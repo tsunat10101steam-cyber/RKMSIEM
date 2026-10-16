@@ -35,6 +35,7 @@ class Ctx:
         self.actor = actor
         self.lists = Lists(engine.config.get("lists"))
         self.response = engine.response
+        self.agents = engine.agents
 
 
 class PlaybookEngine:
@@ -42,6 +43,7 @@ class PlaybookEngine:
         self.db, self.config, self.audit, self.incidents, self.bus, self.metrics = db, config, audit, incidents, bus, metrics
         self.settings = settings
         self.response = None            # Platform 이 Response(어댑터) 를 넣어 줌
+        self.agents = None              # Platform 이 원격 조치 에이전트(rkmsiem/agents.py) 를 넣어 줌
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread = None

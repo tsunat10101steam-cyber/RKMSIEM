@@ -847,6 +847,104 @@ panel("team", "21", "담당자", "TEAM", ["team", "users", "담당자"], "담당
   (el, live) => renderTeam(el, live), { liveSkip: true, noOverview: true });
 panel("topology", "22", "네트워크 토폴로지", "TOPOLOGY", ["topology", "topo", "network", "토폴로지", "네트워크"], "감지한 기기를 끌어다 놓고 와이어로 연결 · 경보·차단 상태 겹쳐 보기 (web/topology.js)", 12,
   (el, live) => renderTopology(el, live), { liveSkip: true, noOverview: true });
+// ---------------------------------------------------------------- 원격 조치 에이전트 (대상 서버의 rkmsiem-agent · rkmsiem/agents.py)
+const AG_ACT = { container_stop: "중지", container_restart: "재시작", process_kill: "종료", service_restart: "재시작" };
+const AG = { timer: null };
+const agAgo = t => t ? `${Math.max(0, Math.round(Date.now() / 1000 - t))}초 전` : "-";
+const agBytes = kb => kb == null ? "-" : kb > 1048576 ? `${(kb / 1048576).toFixed(1)}GB` : `${Math.round(kb / 1024)}MB`;
+panel("agents", "24", "원격 조치", "AGENTS", ["agents", "agent", "원격", "에이전트"], "대상 서버의 에이전트 — 컨테이너 중지·재시작 · 프로세스 종료 · 서비스 재시작 (dashboard agents <이름>)", 12, async (el, live, arg) => {
+  clearTimeout(AG.timer);
+  const want = String(arg || "").trim();
+  if (want) return agentDetail(el, want, live);
+  const r = await api("/api/agents");
+  const card = a => `<div class="cx-card" style="border:1px solid var(--line, #333);border-radius:6px;padding:10px 12px;min-width:240px;flex:1 1 240px">
+      <div><b>${esc(a.name)}</b> ${a.online ? `<span class="acc">● 연결됨</span>` : `<span class="c-high">● 끊김</span>`} <span class="faint">${esc(a.hostname || "")}</span></div>
+      <div class="dim" style="font-size:12px;margin:4px 0">${a.summary.ips.map(esc).join(" · ") || "-"} · 마지막 ${agAgo(a.last_seen)}${a.summary.load ? ` · 부하 ${a.summary.load.map(x => x.toFixed(2)).join(" ")}` : ""}</div>
+      <div class="dim" style="font-size:12px">${a.summary.docker ? `컨테이너 ${a.summary.containers}` : "docker 없음"} · 실패한 서비스 ${a.summary.failed_services ? `<span class="c-high">${a.summary.failed_services}</span>` : 0}
+        · 허용: ${a.allow.length ? a.allow.map(x => esc(r.actions[x] || x)).join(", ") : "<span class='c-medium'>없음(보고만)</span>"}</div>
+      <div style="margin-top:6px"><span class="link" data-cmd="dashboard agents ${esc(a.name)}">▣ 열기</span></div></div>`;
+  el.innerHTML = `<div class="meta-line"><span>모드 <b class="${r.mode === "live" ? "c-high" : ""}">${esc(r.mode)}</b>${r.mode === "simulate" ? " (조치는 기록만 · 에이전트에 보내지 않음)" : " — 조치가 실제로 실행됨"}</span><span>에이전트 <b>${r.items.length}</b></span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px">${r.items.map(card).join("") || `<div class="empty-state" style="flex:1">등록한 에이전트가 없습니다.</div>`}</div>
+    ${can("config:write") ? `<h4 style="margin:16px 0 8px;font:700 14px var(--ko)">에이전트 추가</h4>
+      <div class="inline-form"><input class="ag-name" placeholder="이름 (예: ids-server)" maxlength="32"><input class="ag-siem" value="${esc(r.install.origin)}" title="에이전트가 접속할 SIEM 주소" style="flex:1"><button class="btn primary" data-act="enroll">등록 코드 만들기</button></div>
+      <div class="ag-cmd"></div>
+      <p class="hint">에이전트는 대상 서버에서 SIEM 으로 <b>나가서</b> 할 일을 받아 갑니다 (대상 서버에 들어오는 포트 없음). 무엇을 허용할지는 대상 서버의 <code>/etc/rkmsiem-agent/agent.env</code> (ALLOW · PROTECT_*) 가 정합니다.
+        SIEM 방화벽에서 대상 서버 IP 를 8443 에 허용해야 합니다.</p>` : ""}`;
+  const eb = $('[data-act="enroll"]', el);
+  if (eb) eb.onclick = async () => {
+    const name = $(".ag-name", el).value.trim(), siem = $(".ag-siem", el).value.trim().replace(/\/+$/, "");
+    if (!name) { shake($(".ag-name", el), 5); return; }
+    eb.disabled = true;
+    try {
+      const e = await api("/api/agents", { method: "POST", body: { name } });
+      const fp = r.install.fingerprint, https = siem.startsWith("https://");
+      const cmd = `curl -fsS${https ? "k" : ""} ${siem}/agent/rkmsiem-agent.tgz -o /tmp/rkmsiem-agent.tgz && echo "${r.install.sha256}  /tmp/rkmsiem-agent.tgz" | sha256sum -c - && tar xzf /tmp/rkmsiem-agent.tgz -C /tmp && sudo /tmp/rkmsiem-agent/install-agent.sh --siem ${siem}${fp ? ` --fingerprint ${fp}` : ""} --code ${e.code}`;
+      $(".ag-cmd", el).innerHTML = `<div class="msg acc" style="margin-top:8px">'${esc(e.name)}' 등록 코드 — ${fmtT(e.expires_at)} 까지 · 1회용. 대상 서버에서 실행:</div>
+        <pre class="pl-pre" style="white-space:pre-wrap;user-select:all">${esc(cmd)}</pre>
+        ${https && !fp ? `<div class="msg c-high">SIEM 인증서 지문을 아직 모릅니다 — SIEM 서버에서 <code>sudo rkmsiem-update</code> 후 다시 만들거나, <code>sudo /usr/share/rkmsiem/deploy/tls.sh --show</code> 의 지문을 --fingerprint 로 넣으세요.</div>` : ""}
+        <div class="hint">꾸러미는 SIEM 에서 받고, 위 해시(sha256)가 맞을 때만 설치합니다. 설치되면 몇 초 안에 위 목록에 '연결됨'으로 나타납니다.</div>`;
+      clearTimeout(AG.timer);                                         // 설치되면 목록을 저절로 새로 고침
+      AG.timer = setTimeout(function poll() { if (!el.isConnected) return; api("/api/agents").then(x => { if (x.items.some(a => a.name === e.name)) toast(`에이전트 '${esc(e.name)}' 연결됨`); else AG.timer = setTimeout(poll, 4000); }).catch(() => {}); }, 4000);
+    } catch (x) { toast(`<span class="err">${esc(errMsg(x))}</span>`, "critical"); }
+    finally { eb.disabled = false; }
+  };
+}, { liveSkip: true, noOverview: true, perm: "runs:read" });
+
+async function agentDetail(el, name, live) {
+  const a = await api(`/api/agents/${encodeURIComponent(name)}`), i = a.info || {}, ok = x => a.allow.includes(x) && can("runs:approve");
+  const keep = $(".ag-why", el)?.value || "";
+  const btn = (act, attrs, prot) => ok(act) && !prot ? `<button class="btn danger" data-ag="${act}" ${attrs}>${AG_ACT[act]}</button>` : "";
+  el.innerHTML = `<div class="meta-line"><span><b>${esc(a.name)}</b> ${a.online ? `<span class="acc">● 연결됨</span>` : `<span class="c-high">● 끊김 (${agAgo(a.last_seen)})</span>`}</span>
+      <span>${esc(a.hostname || "")} · ${esc(i.os || "")}</span><span>${(i.ips || []).map(esc).join(" · ")}</span>
+      <span>CPU ${i.cpus || "-"}개 · 부하 ${(i.load || []).map(x => x.toFixed(2)).join(" ")} · 메모리 ${agBytes(i.mem?.available)} / ${agBytes(i.mem?.total)} 남음</span>
+      <span>허용: ${a.allow.map(x => esc(x)).join(", ") || "없음"}</span><span class="link" data-cmd="dashboard agents">← 목록</span></div>
+    ${can("runs:approve") ? `<div class="inline-form"><input class="ag-why" placeholder="사유 (모든 원격 조치에 필수 — 감사 로그에 남음)" style="flex:1" value="${esc(keep)}"></div>` : ""}
+    <h4 style="margin:12px 0 6px;font:700 14px var(--ko)">컨테이너</h4>
+    ${i.docker ? `<div class="tbl"><table><thead><tr><th>이름</th><th>이미지</th><th>상태</th><th>CPU</th><th>메모리</th><th></th></tr></thead><tbody>${(i.containers || []).map(c => `<tr>
+      <td><b>${esc(c.name)}</b>${c.protected ? ` <span class="faint">보호</span>` : ""}</td><td class="dim">${esc(c.image || "")}</td><td>${c.state === "running" ? `<span class="acc">${esc(c.status)}</span>` : esc(c.status || c.state)}</td>
+      <td class="num ${c.cpu > 80 ? "c-critical" : ""}">${c.cpu == null ? "-" : c.cpu.toFixed(1) + "%"}</td><td class="dim">${esc(c.mem || "-")}</td>
+      <td class="ix-btns">${c.state === "running" ? btn("container_stop", `data-container="${esc(c.name)}"`, c.protected) : ""}${btn("container_restart", `data-container="${esc(c.name)}"`, c.protected)}</td></tr>`).join("") || `<tr><td colspan="6">${empty("컨테이너 없음")}</td></tr>`}</tbody></table></div>`
+      : `<div class="dim">이 서버에 docker 가 없습니다.</div>`}
+    <h4 style="margin:12px 0 6px;font:700 14px var(--ko)">프로세스 <span class="faint" style="font-weight:400">(CPU 상위 · 약 25초마다 갱신)</span></h4>
+    <div class="tbl"><table><thead><tr><th>PID</th><th>사용자</th><th>CPU</th><th>메모리</th><th>명령</th><th></th></tr></thead><tbody>${(i.processes || []).map(x => `<tr>
+      <td class="num">${x.pid}</td><td>${esc(x.user)}</td><td class="num ${x.cpu > 80 ? "c-critical" : ""}">${x.cpu.toFixed(1)}%</td><td class="num">${x.mem.toFixed(1)}%</td>
+      <td style="max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.cmd)}"><b>${esc(x.comm)}</b> <span class="dim">${esc(x.cmd)}</span>${x.protected ? ` <span class="faint">보호</span>` : ""}</td>
+      <td class="ix-btns">${btn("process_kill", `data-pid="${x.pid}" data-start="${x.start}" data-expect="${esc(x.comm)}"`, x.protected)}</td></tr>`).join("") || `<tr><td colspan="6">${empty("보고 없음")}</td></tr>`}</tbody></table></div>
+    <h4 style="margin:12px 0 6px;font:700 14px var(--ko)">서비스</h4>
+    <div class="dim" style="margin-bottom:6px">실패한 서비스: ${(i.failed_services || []).map(sv => `<code>${esc(sv)}</code> ${btn("service_restart", `data-service="${esc(sv)}"`)}`).join(" ") || "없음"}</div>
+    ${ok("service_restart") ? `<div class="inline-form"><input class="ag-svc" placeholder="서비스 이름 (예: nginx)"><button class="btn danger" data-ag="service_restart" data-service-input="1">재시작</button>
+      <span class="faint">보호: ${(i.protect?.services || []).map(esc).join(", ")}</span></div>` : ""}
+    <h4 style="margin:12px 0 6px;font:700 14px var(--ko)">작업 기록</h4>
+    <div class="tbl"><table><thead><tr><th>#</th><th>시각</th><th>조치</th><th>대상</th><th>상태</th><th>누가 · 사유</th><th>결과</th></tr></thead><tbody>${a.jobs.map(j => `<tr>
+      <td class="num">${j.id}</td><td style="white-space:nowrap">${fmtT(j.created_at)}</td><td>${esc(j.action)}</td><td>${esc(j.params.container || j.params.service || (j.params.pid ? `PID ${j.params.pid} ${j.params.expect || ""}` : ""))}</td>
+      <td>${state(j.state === "sent" ? "running" : j.state === "expired" ? "failed" : j.state)}</td><td>${esc(j.requested_by || "")}${j.incident_id ? ` <span class="link" data-cmd="incident ${j.incident_id}">#${j.incident_id}</span>` : ""} <span class="dim">${esc(j.reason || "")}</span></td>
+      <td class="${j.error ? "err" : "dim"}" style="font-size:12px">${esc(j.error || (j.result ? JSON.stringify(j.result).slice(0, 120) : ""))}</td></tr>`).join("") || `<tr><td colspan="7">${empty("작업 없음")}</td></tr>`}</tbody></table></div>
+    ${can("config:write") ? `<div class="inline-form" style="margin-top:12px"><button class="btn danger" data-act="revoke">에이전트 해제</button><span class="faint">토큰을 무효로 — 대상 서버에서는 sudo /tmp/rkmsiem-agent/install-agent.sh --uninstall</span></div>` : ""}`;
+  const why = () => ($(".ag-why", el)?.value || "").trim();
+  $$("[data-ag]", el).forEach(b => b.onclick = async () => {
+    const act = b.dataset.ag, d = b.dataset;
+    const body = { action: act, reason: why() };
+    if (d.container) body.container = d.container;
+    if (d.pid) Object.assign(body, { pid: +d.pid, start: +d.start, expect: d.expect });
+    if (d.service) body.service = d.service;
+    if (d.serviceInput) body.service = $(".ag-svc", el).value.trim();
+    if (!body.reason) { const w = $(".ag-why", el); w.focus(); shake(w, 5); toast("사유를 적어 주세요", "high"); return; }
+    if (act === "service_restart" && !body.service) { shake($(".ag-svc", el), 5); return; }
+    const what = body.container || body.service || `PID ${body.pid} (${body.expect})`;
+    if (!confirm(`${a.name}: ${what} ${AG_ACT[act]}\n계속할까요?`)) return;
+    b.disabled = true; b.textContent = "실행 중…";
+    try { const o = await api(`/api/agents/${encodeURIComponent(name)}/actions`, { method: "POST", body });
+      toast(o.output?.simulated ? `simulate — ${esc(o.output.would)} (기록만)` : `${esc(what)} ${AG_ACT[act]} 완료`); }
+    catch (x) { toast(`<span class="err">${esc(errMsg(x))}</span>`, "critical"); }
+    agentDetail(el, name, true);
+  });
+  const rv = $('[data-act="revoke"]', el);
+  if (rv) rv.onclick = async () => { if (!confirm(`'${name}' 에이전트를 해제할까요? 토큰이 무효가 되어 더는 연결되지 않습니다.`)) return;
+    try { await api(`/api/agents/${encodeURIComponent(name)}`, { method: "DELETE" }); toast(`${esc(name)} 해제`); run("dashboard agents"); } catch (x) { toast(`<span class="err">${esc(errMsg(x))}</span>`, "critical"); } };
+  clearTimeout(AG.timer);
+  AG.timer = setTimeout(() => { if (el.isConnected && document.activeElement?.tagName !== "INPUT" && !$("button[disabled]", el)) agentDetail(el, name, true).catch(() => {}); }, 15000);
+}
+
 // ---------------------------------------------------------------- 연동 (connect) — 당겨오기 소스와 그 화면(view)
 // 화면은 콘솔과 다른 출처(https://<서버>:8445)에서 열림 — 연동 제품 페이지가 콘솔 로그인 토큰에 닿지 못하게 (rkmsiem/connect.py)
 let cxExp = 0;
@@ -1003,6 +1101,7 @@ async function incidentActions(box, id, live) {
     ${t.accounts.length ? `<div class="tbl" style="margin-top:6px"><table><thead><tr><th>계정</th><th>이벤트</th><th>상태</th><th></th></tr></thead><tbody>${t.accounts.map(acRow).join("")}</tbody></table></div>` : ""}
     ${!t.ips.length && !t.accounts.length ? `<div class="dim">이 사건에서 나온 IP·계정이 없습니다.</div>` : ""}
     ${t.hosts.length ? `<div class="dim" style="font-size:12px;margin-top:6px">관련 호스트: ${t.hosts.map(h => `<code>${esc(h.value)}</code>`).join(" ")}</div>` : ""}
+    ${(t.agents || []).length ? `<div style="margin-top:6px">원격 조치: ${t.agents.map(n => `<span class="link" data-cmd="dashboard agents ${esc(n)}">▣ ${esc(n)}</span>`).join(" · ")} <span class="faint">(컨테이너·프로세스·서비스)</span></div>` : ""}
     ${t.playbooks.length ? `<div class="inline-form" style="margin-top:8px"><select class="ix-pb" aria-label="플레이북">${t.playbooks.map(pb => `<option value="${esc(pb.id)}" title="${esc(pb.description)}">${esc(pb.name)} (${esc(pb.id)})</option>`).join("")}</select><button class="btn" data-ix="playbook">플레이북 실행</button></div>` : ""}
     <div class="ix-out"></div>`;
   const out = $(".ix-out", box), why = () => ($(".ix-why", box)?.value || "").trim();
@@ -1136,7 +1235,7 @@ function showAll() {
 }
 
 // ================================================================ 명령
-const ORDER = ["threat", "kpi", "alerts", "hourly", "top", "targets", "timeline", "map", "ips", "incidents", "runs", "rules", "collectors", "events", "audit", "blocklist", "doctor", "automation", "mail", "settings", "team", "topology", "connect"];
+const ORDER = ["threat", "kpi", "alerts", "hourly", "top", "targets", "timeline", "map", "ips", "incidents", "runs", "rules", "collectors", "events", "audit", "blocklist", "doctor", "automation", "mail", "settings", "team", "topology", "connect", "agents"];
 const ALL = ["threat", "kpi", "alerts", "hourly", "top", "targets", "map", "timeline", "incidents", "runs", "ips", "collectors"];
 const ALIAS = {};
 ORDER.forEach(k => PANELS[k].aliases.forEach(a => ALIAS[a] = k));
@@ -1412,7 +1511,7 @@ input.addEventListener("keydown", e => {
     if (m.length === 1) input.value = m[0]; else if (m.length > 1) out.insertAdjacentHTML("beforeend", `<div class="msg dim">${m.map(esc).join("    ")}</div>`); }
 });
 $("#term").addEventListener("click", e => { if (booted && !e.target.closest("input,button,a,select,table,.crow,.hrow,.col,.tl-row,svg,.globe-box,.link,[data-cmd],.au-grid,.au-bar,.au-tool") && !getSelection().toString()) input.focus(); });
-$("#chips").innerHTML = ["all", "threat", "incidents", "runs", "map", "alerts", "hourly", "top", "ips", "collectors", "rules", "events", "automation", "mail", "settings", "team", "topology", "connect"].map(k => k === "all"
+$("#chips").innerHTML = ["all", "threat", "incidents", "runs", "map", "alerts", "hourly", "top", "ips", "collectors", "rules", "events", "automation", "mail", "settings", "team", "topology", "connect", "agents"].map(k => k === "all"
   ? `<button class="chip" data-cmd="dashboard all">all<span class="ko">전체</span></button>` : `<button class="chip" data-cmd="dashboard ${PANELS[k].aliases[0]}">${PANELS[k].aliases[0]}<span class="ko">${esc(PANELS[k].title)}</span></button>`).join("") +
   `<button class="chip" data-cmd="help">help</button>`;
 $$(".chip").forEach(b => b.onclick = async () => { if (busy || loginStep) return; const cmd = b.dataset.cmd; input.value = ""; input.focus();

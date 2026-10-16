@@ -1,0 +1,19 @@
+[Unit]
+Description=RKMSIEM 원격 조치 에이전트 (SIEM 으로 나가서 상태 보고 · 허용된 조치 실행)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/rkmsiem-agent/rkmsiem-agent.py
+Restart=always
+RestartSec=5
+# 컨테이너·프로세스·서비스 조치에 root 가 필요 — 대신 무엇을 할지는 /etc/rkmsiem-agent/agent.env 의 ALLOW·PROTECT_* 가 정함
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=false
+
+[Install]
+WantedBy=multi-user.target

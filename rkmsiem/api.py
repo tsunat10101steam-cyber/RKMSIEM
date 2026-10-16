@@ -4,6 +4,7 @@
 SQL 은 매개변수 바인딩만, 정렬/필터 필드는 허용 목록으로만 받는다.
 """
 import functools
+import hashlib
 import hmac
 import json
 import logging
@@ -498,7 +499,9 @@ def create_app(platform):
         perms = g.user["permissions"]
         pbs = [{"id": pid, "name": pb.get("name") or pid, "description": pb.get("description", "")}
                for pid, pb in sorted(p.config.all("playbook").items()) if pb.get("enabled", True)]
-        return jsonify(dict(_incident_entities(iid), mode=s.get("soar.mode"),
+        ent = _incident_entities(iid)
+        ent["agents"] = p.agents.by_hosts([h["value"] for h in ent["hosts"]] + [x["value"] for x in ent["ips"]])
+        return jsonify(dict(ent, mode=s.get("soar.mode"),
                             actions={k: k_perm in perms for k, (_, k_perm, _) in INCIDENT_ACTIONS.items()},
                             playbooks=pbs if "playbooks:run" in perms else []))
 
@@ -792,6 +795,127 @@ def create_app(platform):
         except KeyError:
             raise ApiError(404, "not_found")
         return jsonify({"ok": True})
+
+    # ------------------------------------------------------------ 원격 조치 에이전트 (rkmsiem/agents.py · web/agent/)
+    from .agents import ACTIONS as AGENT_ACTIONS, AgentError
+
+    def _agent():
+        h = request.headers.get("Authorization", "")
+        a = p.agents.resolve(h[7:] if h.startswith("Bearer ") else None)
+        if not a:
+            raise ApiError(401, "unauthorized", "에이전트 토큰이 없거나 해제됨")
+        return a
+
+    _agent_pkg = {}
+
+    def _agent_tgz():
+        """web/agent/ 를 묶은 설치 꾸러미 (시각·소유자 고정 → 같은 내용이면 같은 해시)."""
+        import gzip as _gz
+        import io
+        import tarfile
+        d = os.path.join(WEB_DIR, "agent")
+        files = sorted(f for f in os.listdir(d) if not f.startswith((".", "__")))
+        key = tuple((f, os.path.getmtime(os.path.join(d, f))) for f in files)
+        if _agent_pkg.get("key") != key:
+            raw = io.BytesIO()
+            with tarfile.open(fileobj=raw, mode="w", format=tarfile.GNU_FORMAT) as t:
+                for f in files:
+                    data = open(os.path.join(d, f), "rb").read()
+                    ti = tarfile.TarInfo(f"rkmsiem-agent/{f}")
+                    ti.size, ti.mtime, ti.mode, ti.uid, ti.gid = len(data), 0, 0o755 if f.endswith((".sh", ".py")) else 0o644, 0, 0
+                    t.addfile(ti, io.BytesIO(data))
+            gz = io.BytesIO()
+            with _gz.GzipFile(fileobj=gz, mode="wb", mtime=0) as g:
+                g.write(raw.getvalue())
+            body_ = gz.getvalue()
+            _agent_pkg.update(key=key, body=body_, sha=hashlib.sha256(body_).hexdigest())
+        return _agent_pkg
+
+    @app.get("/agent/rkmsiem-agent.tgz")
+    def agent_package():                         # 로그인 없이 — 공개 코드. 설치 명령이 콘솔에 보이는 해시로 확인
+        pk = _agent_tgz()
+        return Response(pk["body"], mimetype="application/gzip", headers={"Content-Disposition": "attachment; filename=rkmsiem-agent.tgz",
+                                                                          "X-Content-SHA256": pk["sha"]})
+
+    @app.post("/api/agent/enroll")
+    def agent_enroll():
+        b = body({"type": "object", "required": ["code"], "properties": {"code": {"type": "string", "maxLength": 128},
+                  "hostname": {"type": "string", "maxLength": 128}, "version": {"type": "string", "maxLength": 32}}})
+        try:
+            return jsonify(p.agents.enroll(b["code"], b.get("hostname"), b.get("version"), client()))
+        except AgentError as e:
+            p.audit.record("agent:?", "agent.enroll_failed", "agent", None, None, {"ip": client()})
+            raise ApiError(401, "enroll_failed", str(e))
+
+    @app.post("/api/agent/poll")
+    def agent_poll():
+        a = _agent()
+        if (request.content_length or 0) > 1024 * 1024:
+            raise ApiError(413, "too_large")
+        b = body() or {}
+        p.agents.heartbeat(a, b, client())
+        wait = 0.0 if b.get("results_pending") else 25.0
+        return jsonify({"jobs": p.agents.take_jobs(a["id"], wait), "server_time": time.time()})
+
+    @app.post("/api/agent/jobs/<int:jid>/result")
+    def agent_result(jid):
+        a = _agent()
+        b = body({"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}, "result": {"type": "object"},
+                  "error": {"type": ["string", "null"], "maxLength": 4000}}})
+        try:
+            p.agents.finish(a["id"], jid, b["ok"], b.get("result"), b.get("error"))
+        except KeyError:
+            raise ApiError(404, "not_found")
+        return jsonify({"ok": True})
+
+    @app.get("/api/agents")
+    @require("runs:read")
+    def agents_list():
+        pk = _agent_tgz()
+        origin = f"https://{request.host}" if request.headers.get("X-Forwarded-Proto") == "https" or request.is_secure else f"http://{request.host}"
+        return jsonify({"items": p.agents.list(), "actions": {k: v[0] for k, v in AGENT_ACTIONS.items()}, "mode": s.get("soar.mode"),
+                        "install": {"origin": origin, "sha256": pk["sha"], "fingerprint": (s.secret("RKMSIEM_TLS_FINGERPRINT") or "").replace(":", "").lower()}})
+
+    @app.get("/api/agents/<name>")
+    @require("runs:read")
+    def agent_detail(name):
+        a = p.agents.get(name)
+        if not a:
+            raise KeyError(name)
+        return jsonify(dict(a, jobs=p.agents.jobs(name, 50)))
+
+    @app.post("/api/agents")
+    @require("config:write")
+    def agent_create():
+        b = body({"type": "object", "required": ["name"], "additionalProperties": False, "properties": {"name": {"type": "string", "maxLength": 32}}})
+        try:
+            return jsonify(p.agents.create_enroll(b["name"].strip(), actor())), 201
+        except AgentError as e:
+            raise ApiError(400, str(e))
+
+    @app.delete("/api/agents/<name>")
+    @require("config:write")
+    def agent_revoke(name):
+        p.agents.revoke(name, actor())
+        return jsonify({"ok": True})
+
+    @app.post("/api/agents/<name>/actions")
+    @require("runs:approve")
+    def agent_action(name):
+        b = body({"type": "object", "required": ["action", "reason"], "additionalProperties": False,
+                  "properties": {"action": {"enum": list(AGENT_ACTIONS)}, "reason": {"type": "string", "minLength": 1, "maxLength": 500},
+                                 "container": {"type": "string", "maxLength": 128}, "service": {"type": "string", "maxLength": 128},
+                                 "pid": {"type": "integer", "minimum": 2}, "start": {"type": ["integer", "null"]}, "expect": {"type": ["string", "null"], "maxLength": 200},
+                                 "incident_id": {"type": ["integer", "null"]}}})
+        if g.user["id"] is None:
+            raise ApiError(403, "forbidden", "사람 계정으로만 조치할 수 있습니다")
+        inp = {k: v for k, v in b.items() if k not in ("action", "incident_id")}
+        inp["agent"] = name
+        try:
+            out = p.soar.manual_action(b["action"], inp, actor(), b["reason"], incident_id=b.get("incident_id"))
+        except ApprovalError as e:
+            raise ApiError(409, "action_failed", str(e))
+        return jsonify({"action": b["action"], "agent": name, "mode": s.get("soar.mode"), "output": out})
 
     # ------------------------------------------------------------ 연동 화면 (connect) — rkmsiem/connect.py
     from . import connect as cx

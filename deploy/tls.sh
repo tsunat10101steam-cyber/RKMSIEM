@@ -197,6 +197,7 @@ nginx -t 2>&1 | sed 's/^/  /'
 echo "==> 앱은 이 서버 안에서만 받기 (127.0.0.1) · nginx 를 믿을 수 있는 프록시로"
 setenv "$ENVF" RKMSIEM_API__HOST 127.0.0.1
 setenv "$ENVF" RKMSIEM_API__TRUSTED_PROXIES 1
+setenv "$ENVF" RKMSIEM_TLS_FINGERPRINT "$(fingerprint | tr -d ':' | tr 'A-F' 'a-f')"     # 콘솔이 에이전트 설치 명령에 넣음 (공개 값)
 if [ -f "$STAFFENV" ]; then
 	setenv "$STAFFENV" STAFF_HOST 127.0.0.1
 	setenv "$STAFFENV" STAFF_TRUSTED_PROXIES 1
