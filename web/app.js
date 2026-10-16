@@ -716,28 +716,75 @@ panel("audit", "15", "감사 로그", "AUDIT TRAIL", ["audit", "감사"], "모�
     <td>${esc(a.reason || "")}</td><td class="dim" style="font:11.5px var(--mono);word-break:break-all">${esc(JSON.stringify(a.detail || {})).slice(0, 220)}</td></tr>`).join("")}</tbody></table></div>`;
 }, { noOverview: true, perm: "audit:read" });
 
-panel("blocklist", "16", "차단 목록", "BLOCKLIST", ["blocklist", "blocked", "차단"], "현재 차단된 IP · 수동 차단/해제", 12, async (el, live) => {
-  const r = await api("/api/blocklist");
-  const now = Date.now() / 1000;
-  el.innerHTML = `<div class="meta-line"><span>백엔드 <b>${esc(r.backend)}</b>${r.backend === "nftables" ? " (서버 방화벽에 실제 적용)" : " (플랫폼 기록만)"}</span><span>모드 <b>${esc(r.mode)}</b></span><span>갱신 <b>${fmtT(now)}</b></span></div>
-    ${can("runs:approve") ? `<div class="inline-form"><input class="bip" placeholder="차단할 IP"><input class="bwhy" placeholder="사유 (필수)"><select class="bdur"><option value="3600">1시간</option><option value="86400" selected>1일</option><option value="604800">7일</option><option value="">무기한</option></select><button class="btn danger" data-act="block">차단</button></div>` : ""}
-    <div class="tbl" style="margin-top:10px"><table><thead><tr><th>IP</th><th>사유</th><th>실행</th><th>추가</th><th>만료</th><th></th></tr></thead><tbody>
-    ${r.items.map(b => `<tr><td><b>${esc(b.ip)}</b></td><td>${esc(b.reason || "")}</td><td>${b.run_id ? `<span class="link" data-cmd="run ${b.run_id}">#${b.run_id}</span>` : "수동"}</td><td>${fmtT(b.added_at)}</td>
-      <td>${b.expires_at ? `${fmtT(b.expires_at)} <span class="dim">(${Math.max(0, Math.round((b.expires_at - now) / 60))}분 남음)</span>` : "무기한"}</td>
-      <td>${can("runs:cancel") ? `<button class="btn" data-unblock="${esc(b.ip)}">해제</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="6">${empty("차단된 IP가 없습니다.")}</td></tr>`}</tbody></table></div>`;
-  const redo = () => PANELS.blocklist.render(el, true);
+const BL_VIEW = [["all", "전체"], ["soon", "1시간 안 만료"], ["forever", "무기한"], ["incident", "사건에서"], ["playbook", "플레이북"], ["manual", "수동"]];
+const BL_ACT = { block: "차단", unblock: "해제", extend: "기간 변경", expire: "만료" };
+const BL = { q: "", view: "all", sel: new Set(), hist: null };
+const blLeft = s => s == null ? "무기한" : s < 3600 ? `${Math.max(1, Math.round(s / 60))}분 남음` : s < 86400 ? `${(s / 3600).toFixed(1)}시간 남음` : `${(s / 86400).toFixed(1)}일 남음`;
+panel("blocklist", "16", "차단 목록", "BLOCKLIST", ["blocklist", "blocked", "차단"], "차단 중인 IP — 검색·만료·연장·해제·일괄 해제·기록", 12, async (el, live) => {
+  const qs = new URLSearchParams({ q: BL.q, view: BL.view });
+  const [r, h] = await Promise.all([api(`/api/blocklist?${qs}`), api(`/api/blocklist/history?limit=60${BL.hist ? `&ip=${encodeURIComponent(BL.hist)}` : ""}`)]);
+  const st = r.stats, canB = can("runs:approve"), canU = can("runs:cancel"), sim = r.mode === "simulate";
+  BL.sel = new Set([...BL.sel].filter(ip => r.items.some(x => x.ip === ip)));
+  const src = b => b.source === "incident" ? `<span class="link" data-cmd="incident ${b.incident_id}">사건 #${b.incident_id}</span>` : b.source === "playbook" ? `<span class="link" data-cmd="run ${b.run_id}">실행 #${b.run_id}</span>` : "수동";
+  el.innerHTML = `<div class="meta-line"><span>백엔드 <b>${esc(r.backend)}</b>${r.backend === "nftables" ? " (서버 방화벽에 실제 적용)" : " (플랫폼 기록만)"}</span><span>모드 <b class="${sim ? "" : "c-high"}">${esc(r.mode)}</b></span>
+      <span>차단 중 <b>${st.total}</b> · 1시간 안 만료 <b>${st.soon}</b> · 무기한 <b>${st.forever}</b></span><span>갱신 <b>${fmtT(Date.now() / 1000)}</b></span></div>
+    ${sim ? `<div class="hint">simulate 모드 — 차단·해제는 실제로 하지 않고 아래 '기록'에만 남습니다 (목록에는 안 들어감).</div>` : ""}
+    ${canB ? `<div class="inline-form"><input class="bip" placeholder="차단할 IP"><input class="bwhy" placeholder="사유 (필수)" style="flex:1"><select class="bdur">${IX_DUR.map(([v, l]) => `<option value="${v}" ${v === 86400 ? "selected" : ""}>${l}</option>`).join("")}</select><button class="btn danger" data-act="block">차단</button></div>` : ""}
+    <div class="inline-form" style="margin-top:8px"><input class="bq" placeholder="검색: IP · 사유 · 차단한 사람" value="${esc(BL.q)}" style="flex:1">
+      ${BL_VIEW.map(([k, l]) => `<button class="btn${BL.view === k ? " primary" : ""}" data-view="${k}">${l}${k !== "all" && st[k] != null ? ` ${st[k]}` : ""}</button>`).join("")}</div>
+    ${canU && BL.sel.size ? `<div class="inline-form bl-bulk"><b>${BL.sel.size}개 선택</b><input class="bbwhy" placeholder="해제 사유 (필수)" style="flex:1"><button class="btn danger" data-act="bulk">선택 해제</button><button class="btn" data-act="clearsel">선택 취소</button></div>` : ""}
+    <div class="tbl" style="margin-top:8px"><table><thead><tr>${canU ? `<th><input type="checkbox" class="bl-all" aria-label="모두 선택" ${r.items.length && r.items.every(b => BL.sel.has(b.ip)) ? "checked" : ""}></th>` : ""}<th>IP</th><th>사유</th><th>출처</th><th>차단</th><th>만료</th><th></th></tr></thead><tbody>
+    ${r.items.map(b => `<tr>${canU ? `<td><input type="checkbox" class="bl-one" data-ip="${esc(b.ip)}" ${BL.sel.has(b.ip) ? "checked" : ""}></td>` : ""}
+      <td><b>${esc(b.ip)}</b></td><td>${esc(b.reason || "")}</td><td>${src(b)}</td><td>${fmtT(b.added_at)}${b.added_by ? ` <span class="dim">· ${esc(b.added_by)}</span>` : ""}</td>
+      <td>${b.expires_at ? `${fmtT(b.expires_at)} <span class="${b.remaining_sec <= 3600 ? "c-medium" : "dim"}">(${blLeft(b.remaining_sec)})</span>` : `<span class="c-high">무기한</span>`}</td>
+      <td class="ix-btns">${canB ? `<select class="bl-ext" data-ip="${esc(b.ip)}" aria-label="기간 변경"><option value="">기간 변경…</option>${IX_DUR.map(([v, l]) => `<option value="${v}">지금부터 ${l}</option>`).join("")}</select>` : ""}
+        ${canU ? `<button class="btn" data-unblock="${esc(b.ip)}">해제</button>` : ""}<button class="btn" data-hist="${esc(b.ip)}">기록</button></td></tr>`).join("")
+      || `<tr><td colspan="7">${empty(BL.q || BL.view !== "all" ? "조건에 맞는 차단이 없습니다." : "차단된 IP가 없습니다.")}</td></tr>`}</tbody></table></div>
+    <h4 style="margin:16px 0 8px;font:700 14px var(--ko)">기록${BL.hist ? ` — ${esc(BL.hist)} <span class="link" data-act="histall">[전체 보기]</span>` : " (최근 60건)"}</h4>
+    <div class="tbl"><table><thead><tr><th>시각</th><th>IP</th><th>동작</th><th>누가</th><th>사유</th><th>만료</th></tr></thead><tbody>${h.items.map(x => `<tr>
+      <td style="white-space:nowrap">${fmtT(x.ts)}</td><td><span class="link" data-hist="${esc(x.ip)}">${esc(x.ip)}</span></td>
+      <td>${esc(BL_ACT[x.action] || x.action)}${x.simulated ? ` <span class="faint">(simulate)</span>` : ""}</td><td>${esc(x.actor || "")}${x.incident_id ? ` <span class="link" data-cmd="incident ${x.incident_id}">#${x.incident_id}</span>` : ""}</td>
+      <td>${esc(x.reason || "")}</td><td>${x.action === "block" || x.action === "extend" ? (x.expires_at ? fmtT(x.expires_at) : "무기한") : ""}</td></tr>`).join("") || `<tr><td colspan="6">${empty("기록이 없습니다.")}</td></tr>`}</tbody></table></div>`;
+  const redo = () => PANELS.blocklist.render(el, true), err = e => toast(`<span class="err">${esc(errMsg(e))}</span>`, "critical");
+  const bq = $(".bq", el); let tq;
+  bq.oninput = () => { clearTimeout(tq); tq = setTimeout(() => { BL.q = bq.value.trim(); redo().then(() => { const n = $(".bq", el); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }); }, 300); };
+  $$("[data-view]", el).forEach(b => b.onclick = () => { BL.view = b.dataset.view; redo(); });
+  $$("[data-hist]", el).forEach(b => b.onclick = () => { BL.hist = b.dataset.hist; redo(); });
+  const ha = $('[data-act="histall"]', el); if (ha) ha.onclick = () => { BL.hist = null; redo(); };
+  $$(".bl-one", el).forEach(c => c.onchange = () => { c.checked ? BL.sel.add(c.dataset.ip) : BL.sel.delete(c.dataset.ip); redo(); });
+  const all = $(".bl-all", el); if (all) all.onchange = () => { r.items.forEach(b => all.checked ? BL.sel.add(b.ip) : BL.sel.delete(b.ip)); redo(); };
+  const cs = $('[data-act="clearsel"]', el); if (cs) cs.onclick = () => { BL.sel.clear(); redo(); };
+  const bk = $('[data-act="bulk"]', el);
+  if (bk) bk.onclick = async () => {
+    const why = $(".bbwhy", el).value.trim();
+    if (!why) { shake($(".bbwhy", el), 5); return; }
+    if (!confirm(`${BL.sel.size}개 IP 의 차단을 해제할까요?`)) return;
+    bk.disabled = true;
+    try { const o = await api("/api/blocklist/unblock", { method: "POST", body: { ips: [...BL.sel], reason: why } });
+      toast(`해제 ${o.ok}개${o.failed ? ` · <span class="err">실패 ${o.failed}개: ${esc(o.items.filter(x => !x.ok).map(x => `${x.ip} ${x.error}`).join(", "))}</span>` : ""}`, o.failed ? "high" : "info"); BL.sel.clear(); redo(); }
+    catch (e) { err(e); bk.disabled = false; }
+  };
   $$("[data-unblock]", el).forEach(b => b.onclick = async () => {
-    try { await api(`/api/blocklist/${encodeURIComponent(b.dataset.unblock)}?reason=${encodeURIComponent("콘솔에서 해제")}`, { method: "DELETE" }); toast(`${esc(b.dataset.unblock)} 차단 해제`); redo(); }
-    catch (e) { toast(`<span class="err">${esc(errMsg(e))}</span>`, "critical"); } });
+    const why = prompt(`${b.dataset.unblock} 차단 해제 사유`, "");
+    if (!why || !why.trim()) return;
+    try { await api(`/api/blocklist/${encodeURIComponent(b.dataset.unblock)}?reason=${encodeURIComponent(why.trim())}`, { method: "DELETE" }); toast(`${esc(b.dataset.unblock)} 차단 해제`); redo(); }
+    catch (e) { err(e); } });
+  $$(".bl-ext", el).forEach(sel => sel.onchange = async () => {
+    if (sel.value === "") return;
+    const dur = +sel.value, label = IX_DUR.find(d => d[0] === dur)[1], why = prompt(`${sel.dataset.ip} — 지금부터 ${label} 로 바꿉니다. 사유:`, "");
+    if (!why || !why.trim()) { sel.value = ""; return; }
+    try { const o = await api(`/api/blocklist/${encodeURIComponent(sel.dataset.ip)}/extend`, { method: "POST", body: { reason: why.trim(), duration_sec: dur || null } });
+      toast(o.simulated ? `simulate — ${esc(o.would)}` : `${esc(sel.dataset.ip)} 차단 → ${o.expires_at ? fmtT(o.expires_at) + " 까지" : "무기한"}`); redo(); }
+    catch (e) { err(e); sel.value = ""; } });
   const bb = $('[data-act="block"]', el);
   if (bb) bb.onclick = async () => {
-    const ip = $(".bip", el).value.trim(), why = $(".bwhy", el).value.trim(), dur = $(".bdur", el).value;
+    const ip = $(".bip", el).value.trim(), why = $(".bwhy", el).value.trim(), dur = +$(".bdur", el).value;
     if (!ip || !why) { shake(bb.parentElement, 5); return; }
-    try { const o = await api("/api/blocklist", { method: "POST", body: { ip, reason: why, ...(dur ? { duration_sec: +dur } : {}) } });
+    try { const o = await api("/api/blocklist", { method: "POST", body: { ip, reason: why, ...(dur ? { duration_sec: dur } : {}) } });
       toast(o.simulated ? `시뮬레이션 모드 — ${esc(ip)} 는 실제로 차단되지 않았습니다 (${esc(o.would)})` : `${esc(ip)} 차단됨 (${esc(o.backend)})`, o.simulated ? "info" : "high"); redo(); }
-    catch (e) { toast(`<span class="err">${esc(errMsg(e))}</span>`, "critical"); }
+    catch (e) { err(e); }
   };
-}, { noOverview: true });
+}, { noOverview: true, liveSkip: true });
 
 panel("doctor", "17", "시스템 자가 점검", "DOCTOR", ["doctor", "health", "점검"], "수집 권한·방화벽·계정 헬퍼·인텔·모드 점검 (서비스 권한으로)", 12, async (el, live) => {
   const r = await api("/api/system/doctor");

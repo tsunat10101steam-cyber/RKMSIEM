@@ -268,8 +268,28 @@ class Platform:
         self.pipeline.stop()
         self.soar.stop()
 
+    def sweep_blocks(self, now=None):
+        """기간이 지난 차단을 목록에서 빼고 기록 (방화벽 쪽은 nft 원소 timeout 으로 이미 풀림)."""
+        now = now or time.time()
+        rows = self.db.all("SELECT ip, reason, incident_id, run_id FROM blocklist WHERE expires_at IS NOT NULL AND expires_at <= ?", (now,))
+        for r in rows:
+            with self.db.tx() as c:
+                if c.execute("DELETE FROM blocklist WHERE ip=? AND expires_at IS NOT NULL AND expires_at <= ?", (r["ip"], now)).rowcount:
+                    c.execute("INSERT INTO block_history (ts, ip, action, actor, reason, incident_id, run_id) VALUES (?,?,?,?,?,?,?)",
+                              (now, r["ip"], "expire", "system", r["reason"], r["incident_id"], r["run_id"]))
+        if rows:
+            self.bus.publish("config", {"kind": "blocklist", "name": "expired"})
+        return [r["ip"] for r in rows]
+
     def _ticker_loop(self):
+        n = 0
         while not self._stop.wait(5):
+            n += 1
+            if n % 12 == 0:                                   # 1분마다 만료된 차단 정리
+                try:
+                    self.sweep_blocks()
+                except Exception:
+                    log.exception("block sweep")
             try:
                 self.metrics.set("queue_depth", self.pipeline.q.qsize())
                 self.bus.publish("metrics", {"queue_depth": self.pipeline.q.qsize(), "events_stored": self.metrics.total("events_stored_total"),

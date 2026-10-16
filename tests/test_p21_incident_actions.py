@@ -112,3 +112,53 @@ def test_live_block_and_unblock_shows_state(tmp_path, config_dir, monkeypatch):
     finally:
         p.pipeline.stop()
         p.terminal.stop()
+
+
+# ---------------------------------------------------------------- ③ 차단 관리
+def test_blocklist_manage_extend_bulk_history_expiry(tmp_path, config_dir, monkeypatch):
+    import time
+    p, c, H = build(tmp_path, config_dir, monkeypatch, "live")
+    try:
+        attack(c, "103.75.190.8", "backup")
+        iid = first_incident(c, H)
+        c.post(f"/api/incidents/{iid}/actions", headers=H("adm"), json={"action": "block_ip", "target": "103.75.190.8", "reason": "사건", "duration_sec": 3600})
+        for ip in ("198.51.100.1", "198.51.100.2"):
+            assert c.post("/api/blocklist", headers=H("adm"), json={"ip": ip, "reason": "수동 테스트"}).status_code == 201       # 무기한
+        bl = c.get("/api/blocklist", headers=H("view")).get_json()
+        assert bl["stats"]["total"] == 3 and bl["stats"]["soon"] == 1 and bl["stats"]["forever"] == 2 and bl["stats"]["incident"] == 1
+        row = next(x for x in bl["items"] if x["ip"] == "103.75.190.8")
+        assert row["source"] == "incident" and row["incident_id"] == iid and row["added_by"] == "adm" and 0 < row["remaining_sec"] <= 3600
+        assert [x["ip"] for x in c.get("/api/blocklist?view=forever", headers=H("adm")).get_json()["items"]] == ["198.51.100.2", "198.51.100.1"]
+        assert [x["ip"] for x in c.get("/api/blocklist?q=사건", headers=H("adm")).get_json()["items"]] == ["103.75.190.8"]
+
+        ext = lambda u, ip, **b: c.post(f"/api/blocklist/{ip}/extend", headers=H(u), json=b)
+        assert ext("ana", "103.75.190.8", reason="x", duration_sec=86400).status_code == 403
+        assert ext("adm", "103.75.190.8", duration_sec=86400).status_code == 400                     # 사유 필수
+        assert ext("adm", "203.0.113.9", reason="x", duration_sec=86400).status_code == 409           # 목록에 없음
+        r = ext("adm", "103.75.190.8", reason="재범", duration_sec=86400)
+        assert r.status_code == 200 and r.get_json()["expires_at"] > time.time() + 80000
+        assert ext("adm", "198.51.100.1", reason="한시적으로", duration_sec=3600).status_code == 200    # 무기한 → 1시간
+
+        r = c.post("/api/blocklist/unblock", headers=H("adm"), json={"ips": ["198.51.100.2", "198.51.100.1"], "reason": "오탐 일괄"})
+        assert r.get_json()["ok"] == 2
+        assert c.post("/api/blocklist/unblock", headers=H("ana"), json={"ips": ["103.75.190.8"], "reason": "x"}).status_code == 403
+        assert c.post("/api/blocklist/unblock", headers=H("adm"), json={"ips": ["103.75.190.8"]}).status_code == 400
+
+        p.db.execute("UPDATE blocklist SET expires_at=? WHERE ip='103.75.190.8'", (time.time() - 1,))
+        assert c.get("/api/blocklist", headers=H("adm")).get_json()["stats"]["total"] == 0               # 만료는 바로 목록에서 빠짐
+        assert p.sweep_blocks() == ["103.75.190.8"] and not p.db.one("SELECT 1 FROM blocklist")
+        h = c.get("/api/blocklist/history?ip=103.75.190.8", headers=H("view")).get_json()["items"]
+        assert [x["action"] for x in h] == ["expire", "extend", "block"] and h[2]["incident_id"] == iid and h[1]["reason"] == "재범"
+        allh = c.get("/api/blocklist/history", headers=H("adm")).get_json()["items"]
+        assert sum(1 for x in allh if x["action"] == "unblock") == 2
+    finally:
+        p.pipeline.stop()
+        p.terminal.stop()
+
+
+def test_simulate_block_goes_to_history_only(ctx):
+    p, c, H = ctx
+    assert c.post("/api/blocklist", headers=H("adm"), json={"ip": "198.51.100.7", "reason": "시험"}).get_json()["simulated"] is True
+    assert c.get("/api/blocklist", headers=H("adm")).get_json()["stats"]["total"] == 0
+    h = c.get("/api/blocklist/history", headers=H("adm")).get_json()["items"]
+    assert h[0]["ip"] == "198.51.100.7" and h[0]["action"] == "block" and h[0]["simulated"] == 1 and h[0]["actor"] == "adm"

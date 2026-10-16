@@ -154,6 +154,12 @@ def _guard_ip(ctx, ip):
         raise ActionError(f"{ip} 는 차단할 수 없는 주소입니다")
 
 
+def _block_hist(ctx, ip, act, reason=None, expires_at=None, simulated=False):
+    """차단 관리 화면의 기록 (차단·해제·연장 — 만료는 Platform.sweep_blocks)."""
+    ctx.db.execute("INSERT INTO block_history (ts, ip, action, actor, reason, expires_at, incident_id, run_id, simulated) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (time.time(), ip, act, ctx.actor, reason, expires_at, ctx.incident_id, ctx.run_id, int(simulated)))
+
+
 @action("block_ip", destructive=True, description="IP 차단 (live: nftables 또는 플랫폼 차단 목록)")
 def block_ip(ctx, inp):
     ip = _ip(inp.get("ip"))
@@ -161,6 +167,7 @@ def block_ip(ctx, inp):
     dur = int(inp.get("duration_sec") or 0) or None
     fw = ctx.response.firewall if ctx.response else None
     if ctx.mode == "simulate":
+        _block_hist(ctx, ip, "block", inp.get("reason"), time.time() + dur if dur else None, simulated=True)
         return {"simulated": True, "would": f"block {ip} for {dur or '∞'}s", "ip": ip, "backend": "nftables" if fw else "platform"}
     out = {"ip": ip, "blocked": True, "duration_sec": dur}
     if fw:
@@ -168,9 +175,12 @@ def block_ip(ctx, inp):
             out["firewall"] = fw.block(ip, dur)               # 먼저 실제 차단 — 실패하면 DB 에 남기지 않음
         except ResponseError as e:
             raise _resp_err(e)
-    cur = ctx.db.execute("INSERT OR IGNORE INTO blocklist (ip, reason, run_id, added_at, expires_at) VALUES (?,?,?,?,?)",
-                         (ip, inp.get("reason"), ctx.run_id, time.time(), time.time() + dur if dur else None))
+    exp = time.time() + dur if dur else None
+    cur = ctx.db.execute("INSERT OR IGNORE INTO blocklist (ip, reason, run_id, added_at, expires_at, added_by, incident_id) VALUES (?,?,?,?,?,?,?)",
+                         (ip, inp.get("reason"), ctx.run_id, time.time(), exp, ctx.actor, ctx.incident_id))
     out["already_blocked"] = cur.rowcount == 0                # 멱등: 두 번 실행해도 한 번만
+    if not out["already_blocked"]:
+        _block_hist(ctx, ip, "block", inp.get("reason"), exp)
     out["backend"] = "nftables" if fw else "platform"
     return out
 
@@ -180,6 +190,7 @@ def unblock_ip(ctx, inp):
     ip = _ip(inp.get("ip"))
     fw = ctx.response.firewall if ctx.response else None
     if ctx.mode == "simulate":
+        _block_hist(ctx, ip, "unblock", inp.get("reason"), simulated=True)
         return {"simulated": True, "would": f"unblock {ip}"}
     out = {"ip": ip}
     if fw:
@@ -189,6 +200,32 @@ def unblock_ip(ctx, inp):
             raise _resp_err(e)
     cur = ctx.db.execute("DELETE FROM blocklist WHERE ip=?", (ip,))
     out["unblocked"] = cur.rowcount > 0 or bool(out.get("firewall", {}).get("was_present"))
+    if out["unblocked"]:
+        _block_hist(ctx, ip, "unblock", inp.get("reason"))
+    return out
+
+
+@action("extend_block", destructive=True, description="차단 기간 바꾸기 (지금부터 N초 · 무기한)")
+def extend_block(ctx, inp):
+    ip = _ip(inp.get("ip"))
+    dur = int(inp.get("duration_sec") or 0) or None
+    exp = time.time() + dur if dur else None
+    if ctx.mode == "simulate":
+        _block_hist(ctx, ip, "extend", inp.get("reason"), exp, simulated=True)
+        return {"simulated": True, "would": f"extend {ip} to {dur or '∞'}s"}
+    if not ctx.db.one("SELECT 1 FROM blocklist WHERE ip=?", (ip,)):
+        raise ActionError(f"{ip} 는 차단 목록에 없습니다")
+    _guard_ip(ctx, ip)
+    fw = ctx.response.firewall if ctx.response else None
+    out = {"ip": ip, "duration_sec": dur, "expires_at": exp}
+    if fw:                                                    # nft 세트 원소의 timeout 은 바꿀 수 없어 지우고 다시 넣음
+        try:
+            fw.unblock(ip)
+            out["firewall"] = fw.block(ip, dur)
+        except ResponseError as e:
+            raise _resp_err(e)
+    ctx.db.execute("UPDATE blocklist SET expires_at=? WHERE ip=?", (exp, ip))
+    _block_hist(ctx, ip, "extend", inp.get("reason"), exp)
     return out
 
 

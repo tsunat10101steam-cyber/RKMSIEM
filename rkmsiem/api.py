@@ -522,7 +522,7 @@ def create_app(platform):
         inp = {kind: b["target"].strip()}
         if b["action"] == "block_ip":
             inp.update(duration_sec=b.get("duration_sec"), reason=f"사건 #{iid}: {reason}")
-        if b["action"] == "disable_account":
+        if b["action"] in ("disable_account", "unblock_ip"):
             inp["reason"] = f"사건 #{iid}: {reason}"
         try:
             out = p.soar.manual_action(b["action"], inp, actor(), reason or None, incident_id=iid)
@@ -1219,8 +1219,63 @@ def create_app(platform):
     @app.get("/api/blocklist")
     @require("runs:read")
     def blocklist():
-        rows = p.db.all("SELECT * FROM blocklist ORDER BY added_at DESC LIMIT 1000")
-        return jsonify({"items": rows, "backend": "nftables" if p.response.firewall else "platform", "mode": s.get("soar.mode")})
+        """차단 목록 — q: IP·사유 검색, view: all|soon(1시간 안 만료)|forever|incident|manual|playbook."""
+        now = time.time()
+        rows = p.db.all("SELECT * FROM blocklist WHERE expires_at IS NULL OR expires_at > ? ORDER BY added_at DESC LIMIT 5000", (now,))
+        for r in rows:
+            r["source"] = "incident" if r.get("incident_id") else "playbook" if r.get("run_id") else "manual"
+            r["remaining_sec"] = int(r["expires_at"] - now) if r["expires_at"] else None
+        stats = {"total": len(rows), "soon": sum(1 for r in rows if r["expires_at"] and r["expires_at"] - now <= 3600),
+                 "forever": sum(1 for r in rows if not r["expires_at"]),
+                 "incident": sum(1 for r in rows if r["source"] == "incident"), "manual": sum(1 for r in rows if r["source"] == "manual"),
+                 "playbook": sum(1 for r in rows if r["source"] == "playbook")}
+        q, view = (request.args.get("q") or "").strip().lower(), request.args.get("view") or "all"
+        if q:
+            rows = [r for r in rows if q in r["ip"].lower() or q in (r.get("reason") or "").lower() or q in (r.get("added_by") or "").lower()]
+        if view == "soon":
+            rows = [r for r in rows if r["expires_at"] and r["expires_at"] - now <= 3600]
+        elif view == "forever":
+            rows = [r for r in rows if not r["expires_at"]]
+        elif view in ("incident", "manual", "playbook"):
+            rows = [r for r in rows if r["source"] == view]
+        return jsonify({"items": rows[:1000], "stats": stats, "backend": "nftables" if p.response.firewall else "platform", "mode": s.get("soar.mode")})
+
+    @app.get("/api/blocklist/history")
+    @require("runs:read")
+    def blocklist_history():
+        ip, limit = request.args.get("ip"), min(int(request.args.get("limit", 100) or 100), 500)
+        sql, args = "SELECT * FROM block_history", []
+        if ip:
+            sql, args = sql + " WHERE ip=?", [ip]
+        return jsonify({"items": p.db.all(sql + " ORDER BY ts DESC, id DESC LIMIT ?", args + [limit])})
+
+    @app.post("/api/blocklist/<ip>/extend")
+    @require("runs:approve")
+    def block_extend(ip):
+        b = body({"type": "object", "required": ["reason"], "additionalProperties": False,
+                  "properties": {"reason": {"type": "string", "minLength": 1, "maxLength": 500},
+                                 "duration_sec": {"type": ["integer", "null"], "minimum": 60, "maximum": 31536000}}})
+        try:
+            out = p.soar.manual_action("extend_block", {"ip": ip, "duration_sec": b.get("duration_sec"), "reason": b["reason"]}, actor(), b["reason"])
+        except ApprovalError as e:
+            raise ApiError(409, "action_failed", str(e))
+        p.bus.publish("config", {"kind": "blocklist", "name": ip})
+        return jsonify(out)
+
+    @app.post("/api/blocklist/unblock")
+    @require("runs:cancel")
+    def unblock_bulk():
+        b = body({"type": "object", "required": ["ips", "reason"], "additionalProperties": False,
+                  "properties": {"ips": {"type": "array", "minItems": 1, "maxItems": 500, "items": {"type": "string", "maxLength": 64}},
+                                 "reason": {"type": "string", "minLength": 1, "maxLength": 500}}})
+        res = []
+        for ip in dict.fromkeys(b["ips"]):
+            try:
+                res.append({"ip": ip, "ok": True, "output": p.soar.manual_action("unblock_ip", {"ip": ip, "reason": b["reason"]}, actor(), b["reason"])})
+            except ApprovalError as e:
+                res.append({"ip": ip, "ok": False, "error": str(e)})
+        p.bus.publish("config", {"kind": "blocklist", "name": "bulk"})
+        return jsonify({"items": res, "ok": sum(1 for r in res if r["ok"]), "failed": sum(1 for r in res if not r["ok"])})
 
     @app.post("/api/blocklist")
     @require("runs:approve")
@@ -1236,7 +1291,7 @@ def create_app(platform):
     @require("runs:cancel")
     def unblock_manual(ip):
         reason = request.args.get("reason") or "manual unblock"
-        out = p.soar.manual_action("unblock_ip", {"ip": ip}, actor(), reason)
+        out = p.soar.manual_action("unblock_ip", {"ip": ip, "reason": reason}, actor(), reason)
         p.bus.publish("config", {"kind": "blocklist", "name": ip})
         return jsonify(out)
 
