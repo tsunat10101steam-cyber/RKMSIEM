@@ -47,6 +47,9 @@ class Platform:
         self.soar = PlaybookEngine(self.db, self.config, self.audit, self.incidents, settings, self.bus, self.metrics)
         from .agents import Agents
         self.agents = self.soar.agents = Agents(self.db, self.audit, self.bus)
+        from .feed import Feed
+        self.feed = Feed(self.db)
+        self.bus.listen(self.feed.on_publish)
         self.response = Response(settings)
         from . import normalize
         normalize.configure_self(commands=[((settings.get("response") or {}).get("accounts") or {}).get("helper") or "/usr/local/lib/rkmsiem/rkmsiem-account"])
@@ -290,6 +293,8 @@ class Platform:
             if n % 12 == 0:                                   # 1분마다 만료된 차단 정리
                 try:
                     self.sweep_blocks()
+                    if n % 720 == 0:                          # 1시간마다 7일 지난 피드 정리
+                        self.feed.prune()
                 except Exception:
                     log.exception("block sweep")
             try:

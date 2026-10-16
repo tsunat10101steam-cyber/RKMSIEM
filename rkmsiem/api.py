@@ -515,8 +515,8 @@ def create_app(platform):
         if perm not in g.user["permissions"]:
             p.audit.record(actor(), "auth.forbidden", "api", request.path, None, {"perm": perm, "action": b["action"]})
             return jsonify({"error": "forbidden", "required": perm}), 403
-        if g.user["id"] is None:
-            raise ApiError(403, "forbidden", "사람 계정으로만 조치할 수 있습니다")
+        if g.user.get("kind") == "local":                   # API 토큰(추가 기능)은 권한이 있으면 허용 — 감사 행위자 token:<이름>
+            raise ApiError(403, "forbidden", "점검 키로는 조치할 수 없습니다")
         if not p.incidents.get(iid):
             raise KeyError(iid)
         reason = (b.get("reason") or "").strip()
@@ -754,8 +754,8 @@ def create_app(platform):
         b = body({"type": "object", "required": ["outcome"], "additionalProperties": False,
                   "properties": {"outcome": {"enum": ["done", "skipped", "failed"]}, "note": {"type": "string", "maxLength": 4000},
                                  "checked": {"type": "array", "maxItems": 30, "items": {"type": "integer", "minimum": 0}}}})
-        if g.user["id"] is None:
-            raise ApiError(403, "forbidden", "사람 계정으로만")
+        if g.user.get("kind") == "local":
+            raise ApiError(403, "forbidden", "점검 키로는 처리할 수 없습니다")
         try:
             p.soar.complete_task(rid, sid, actor(), b["outcome"], b.get("note"), b.get("checked"))
         except ApprovalError as e:
@@ -815,6 +815,17 @@ def create_app(platform):
         except KeyError:
             raise ApiError(404, "not_found")
         return jsonify({"ok": True})
+
+    # ------------------------------------------------------------ 이벤트 피드 (추가 기능용 · rkmsiem/feed.py)
+    @app.get("/api/feed")
+    @require("feed:read")
+    def feed():
+        if request.args.get("after") in (None, ""):
+            return jsonify({"items": [], "last_seq": p.feed.last()})
+        types = [t for t in (request.args.get("types") or "").split(",") if t]
+        rows = p.feed.read(int(request.args["after"]), types or None, int(request.args.get("limit", 200) or 200),
+                           float(request.args.get("wait", 0) or 0))
+        return jsonify({"items": rows, "last_seq": rows[-1]["seq"] if rows else int(request.args["after"])})
 
     # ------------------------------------------------------------ 원격 조치 에이전트 (rkmsiem/agents.py · web/agent/)
     from .agents import ACTIONS as AGENT_ACTIONS, AgentError
@@ -927,8 +938,8 @@ def create_app(platform):
                                  "container": {"type": "string", "maxLength": 128}, "service": {"type": "string", "maxLength": 128},
                                  "pid": {"type": "integer", "minimum": 2}, "start": {"type": ["integer", "null"]}, "expect": {"type": ["string", "null"], "maxLength": 200},
                                  "incident_id": {"type": ["integer", "null"]}}})
-        if g.user["id"] is None:
-            raise ApiError(403, "forbidden", "사람 계정으로만 조치할 수 있습니다")
+        if g.user.get("kind") == "local":                   # API 토큰(추가 기능)은 권한이 있으면 허용 — 감사 행위자 token:<이름>
+            raise ApiError(403, "forbidden", "점검 키로는 조치할 수 없습니다")
         inp = {k: v for k, v in b.items() if k not in ("action", "incident_id")}
         inp["agent"] = name
         try:

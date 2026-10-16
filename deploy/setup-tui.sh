@@ -377,6 +377,31 @@ do_remove() {
 	msg "제거" "$(tail -n 5 "$log")\n\n$(dpkg-query -W rkmsiem >/dev/null 2>&1 && echo "패키지 파일도 지우려면: sudo apt remove rkmsiem")"
 }
 
+# ───────────────────────────── 추가 기능 ─────────────────────────────
+do_addons() {
+	installed || { msg "추가 기능" "먼저 RKMSIEM 을 설치하세요."; return; }
+	while :; do
+		local args=() id st name desc sel log
+		while IFS=$'\t' read -r id st name desc; do args+=("$id" "$name — $st"); done < <("$SRC/deploy/addon.sh" list)
+		[ ${#args[@]} -gt 0 ] || { msg "추가 기능" "설치할 수 있는 추가 기능이 없습니다."; return; }
+		dims
+		sel="$(whiptail --title "추가 기능" --ok-button "선택" --cancel-button "뒤로" --menu \
+			"핵심(RKMSIEM)은 사람이 운영하고, 자동화는 추가 기능으로 붙였다 뗐다 합니다.\n추가 기능은 전용 API 토큰(정해진 권한만)으로만 핵심과 이야기합니다." \
+			"$H" "$W" "$LH" "${args[@]}" 3>&1 1>&2 2>&3)" || return
+		IFS=$'\t' read -r id st name desc < <("$SRC/deploy/addon.sh" list | awk -F'\t' -v k="$sel" '$1 == k')
+		log="$LOGDIR/addon-$id-$(date +%Y%m%d-%H%M%S).log"
+		case "$st" in
+			"준비 중") msg "$name" "$desc\n\n아직 준비 중입니다 — 다음 업데이트에서 설치할 수 있게 됩니다." ;;
+			"설치됨")
+				ask_no "$name" "$desc\n\n설치되어 있습니다. 제거할까요?\n(전용 토큰이 폐기되고, 핵심은 수동 운영으로 그대로)" "제거" "취소" || continue
+				if "$SRC/deploy/addon.sh" uninstall "$id" > "$log" 2>&1; then showfile "$name 제거" "$log"; else show_failure "$name 제거" "$log"; fi ;;
+			*)
+				ask "$name" "$desc\n\n설치할까요?" "설치" "취소" || continue
+				if "$SRC/deploy/addon.sh" install "$id" > "$log" 2>&1; then showfile "$name 설치" "$log"; else show_failure "$name 설치" "$log"; fi ;;
+		esac
+	done
+}
+
 # ───────────────────────────── 메인 ─────────────────────────────
 [ "${RKMSIEM_TUI_LIB:-}" = 1 ] && return 0 2>/dev/null     # 시험용: 함수만 불러오기
 case "${1:-}" in
@@ -396,9 +421,10 @@ while :; do
 		3 "업데이트 (받은 새 버전 적용)" \
 		4 "외부 접속 허용 (HTTPS · 다른 PC 에서 웹 콘솔)" \
 		5 "상태 보기" \
-		6 "제거" 3>&1 1>&2 2>&3)" || break
+		6 "추가 기능 (HSOAR 등)" \
+		7 "제거" 3>&1 1>&2 2>&3)" || break
 	case "$choice" in
-		1) do_install ;; 2) do_smoke ;; 3) do_update ;; 4) do_access ;; 5) do_status ;; 6) do_remove ;;
+		1) do_install ;; 2) do_smoke ;; 3) do_update ;; 4) do_access ;; 5) do_status ;; 6) do_addons ;; 7) do_remove ;;
 	esac
 done
 clear

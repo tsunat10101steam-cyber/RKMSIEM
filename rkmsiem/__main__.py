@@ -16,6 +16,7 @@ import json
 import os
 import signal
 import sys
+import time
 import tempfile
 
 from . import logutil, settings as settings_mod
@@ -32,6 +33,10 @@ def main(argv=None):
     us.add_argument("action", choices=["add", "passwd", "mfa-reset"])
     us.add_argument("username")
     us.add_argument("role", nargs="?")
+    at = sub.add_parser("addon-token", help="추가 기능 전용 API 토큰 (deploy/addon.sh 가 부름) — create 는 토큰을 표준 출력으로")
+    at.add_argument("action", choices=["create", "revoke"])
+    at.add_argument("addon")
+    at.add_argument("scopes", nargs="*")
     sub.add_parser("gen-sample")
     sub.add_parser("verify-audit")
     rs = sub.add_parser("reset", help="데이터 초기화 (test: 스모크테스트·샘플 기록만, all: 이벤트·경보·사건 전부)")
@@ -95,6 +100,28 @@ def main(argv=None):
         r = reset(p, a.scope, os.environ.get("SUDO_USER") or "cli", "CLI 초기화", include_blocklist=a.include_blocklist)
         print("완료: " + ", ".join(f"{k} {v}" for k, v in r["counts"].items()))
         print("서비스가 실행 중이면 메모리 상태를 맞추기 위해 재시작하세요: sudo systemctl restart rkmsiem")
+        return 0
+
+    if a.cmd == "addon-token":
+        import re
+        from .auth import AuthService
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", a.addon):
+            print("추가 기능 id: 영문 소문자·숫자·- (예: hsoar)", file=sys.stderr)
+            return 2
+        auth = AuthService(p.db, p.config, p.audit, s, vault=p.vault)
+        name, who = f"addon-{a.addon}", os.environ.get("SUDO_USER") or "root"
+        for r in p.db.all("SELECT id FROM api_tokens WHERE name=?", (name,)):          # 다시 설치 = 새 토큰 (예전 것은 폐기·이름 비움)
+            p.db.execute("UPDATE api_tokens SET revoked_at=COALESCE(revoked_at, ?), name=? WHERE id=?", (time.time(), f"{name}-old-{r['id']}", r["id"]))
+        if a.action == "revoke":
+            p.audit.record(who, "addon.token_revoke", "api_token", name)
+            print(f"{name} 토큰 폐기")
+            return 0
+        try:
+            t = auth.create_api_token(name, a.scopes, f"{who} (addon)")
+        except ValueError as e:
+            print(f"토큰을 만들 수 없습니다: {e}", file=sys.stderr)
+            return 2
+        print(t["token"])
         return 0
 
     if a.cmd == "user":

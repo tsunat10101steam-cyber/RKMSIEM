@@ -11,6 +11,10 @@ class Bus:
         self._lock = threading.Lock()
         self._buffer = buffer
         self._seq = itertools.count(1)
+        self._listeners = []                    # 동기 리스너 (이벤트 피드 기록 등) — 예외는 삼킴
+
+    def listen(self, fn):
+        self._listeners.append(fn)
 
     def subscribe(self):
         q = queue.Queue(self._buffer)
@@ -24,6 +28,11 @@ class Bus:
 
     def publish(self, kind, data):
         msg = {"id": next(self._seq), "type": kind, "ts": time.time(), "data": data}
+        for fn in self._listeners:
+            try:
+                fn(kind, data)
+            except Exception:                   # noqa: BLE001 — 기록 실패가 실시간 전달을 막지 않게
+                pass
         with self._lock:
             subs = list(self._subs)
         for q in subs:

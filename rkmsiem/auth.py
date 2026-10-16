@@ -276,7 +276,10 @@ class AuthService:
             self.audit.record(actor, "user.mfa_reset", "user", username, conn=c)
 
     # ---------- 장기 API 토큰 (rkm_…) ----------
-    TOKEN_SCOPES = ["metrics:read", "alerts:read", "incidents:read", "events:read", "collectors:read"]
+    TOKEN_SCOPES = ["metrics:read", "alerts:read", "incidents:read", "events:read", "collectors:read", "runs:read", "feed:read",
+                    # 쓰기 — 추가 기능(HSOAR 등)용. 토큰 이름이 감사 로그의 행위자(token:<이름>)
+                    "incidents:write", "playbooks:run", "runs:approve", "runs:cancel"]
+    WRITE_SCOPES = {"incidents:write", "playbooks:run", "runs:approve", "runs:cancel"}
 
     def create_api_token(self, name, scopes, actor, expires_days=None):
         name = (name or "").strip()
@@ -285,7 +288,7 @@ class AuthService:
         scopes = sorted(set(scopes or []))
         bad = [s for s in scopes if s not in self.TOKEN_SCOPES]
         if not scopes or bad:
-            raise ValueError(f"권한은 {', '.join(self.TOKEN_SCOPES)} 중에서 (읽기 전용)")
+            raise ValueError(f"권한은 {', '.join(self.TOKEN_SCOPES)} 중에서")
         tok = "rkm_" + secrets.token_urlsafe(32)
         exp = time.time() + int(expires_days) * 86400 if expires_days else None
         import json as _json
@@ -318,7 +321,7 @@ class AuthService:
         if not r["last_used_at"] or now - r["last_used_at"] > 60:        # 매 요청마다 쓰지 않게 (1분 단위)
             self.db.execute("UPDATE api_tokens SET last_used_at=?, last_used_ip=? WHERE id=?", (now, client, r["id"]))
         return {"id": None, "username": f"token:{r['name']}", "role": "api", "permissions": set(_json.loads(r["scopes"])),
-                "must_change": False, "mfa": False}
+                "must_change": False, "mfa": False, "kind": "token"}
 
     def resolve(self, token, kind="session", client=None):
         if not token:
@@ -332,7 +335,7 @@ class AuthService:
         if kind == "stream":                                 # 1회용
             self.db.execute("DELETE FROM tokens WHERE token_hash=?", (_sha(token),))
         return {"id": r["id"], "username": r["username"], "role": r["role"], "permissions": self.permissions(r["role"]),
-                "must_change": bool(r["must_change_pw"]), "mfa": bool(r["totp_enabled"])}
+                "must_change": bool(r["must_change_pw"]), "mfa": bool(r["totp_enabled"]), "kind": "user"}
 
     def logout(self, token):
         r = self.db.one("SELECT user_id FROM tokens WHERE token_hash=? AND kind='session'", (_sha(token),))
@@ -364,7 +367,7 @@ class AuthService:
         role = "admin" if "admin" in self.roles() else next((r for r in self.roles() if "users:write" in self.permissions(r)), None)
         if not role:
             return None
-        return {"id": None, "username": "root@local", "role": role, "permissions": self.permissions(role), "must_change": False, "mfa": True}
+        return {"id": None, "username": "root@local", "role": role, "permissions": self.permissions(role), "must_change": False, "mfa": True, "kind": "local"}
 
     def check_ingest_key(self, key):
         return bool(key) and any(hmac.compare_digest(_sha(key), k) for k in self._ingest)

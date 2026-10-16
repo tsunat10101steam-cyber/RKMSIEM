@@ -353,7 +353,10 @@ function stRep(box) {
 const ST_COUNT_KO = { events: "이벤트", alerts: "경보", incidents: "사건", runs: "플레이북 실행", blocklist: "차단", accounts: "계정 잠금 기록", incidents_kept: "남기는 사건" };
 const stCounts = c => Object.entries(c).filter(([k, v]) => v || k === "events").map(([k, v]) => `${ST_COUNT_KO[k] || k} <b>${fmt(v)}</b>`).join(" · ");
 // API 토큰 — Prometheus 등 다른 시스템이 /metrics · 조회 API 를 읽을 때 (읽기 전용 권한만, 토큰은 만들 때 한 번만 보임)
-const TOKEN_SCOPE_KO = { "metrics:read": "지표 /metrics (Prometheus)", "alerts:read": "경보 조회", "incidents:read": "사건 조회", "events:read": "이벤트 조회", "collectors:read": "수집기 상태" };
+const TOKEN_SCOPE_KO = { "metrics:read": "지표 /metrics (Prometheus)", "alerts:read": "경보 조회", "incidents:read": "사건 조회", "events:read": "이벤트 조회", "collectors:read": "수집기 상태",
+  "runs:read": "플레이북 실행 조회", "feed:read": "이벤트 피드 /api/feed", "incidents:write": "사건 변경·할 일 처리", "playbooks:run": "플레이북 실행",
+  "runs:approve": "차단·잠금·원격 조치 (승인 권한)", "runs:cancel": "해제·실행 취소" };
+const TOKEN_WRITE = new Set(["incidents:write", "playbooks:run", "runs:approve", "runs:cancel"]);
 async function stTokens(box) {
   if (!can("users:write")) { box.innerHTML = `<p class="hint">API 토큰은 관리자(users:write)만 관리합니다.</p>`; return; }
   let r;
@@ -361,11 +364,13 @@ async function stTokens(box) {
   catch (e) { box.innerHTML = `<div class="err">${esc(errMsg(e))}</div>`; return; }
   const host = location.host, now = Date.now() / 1000;
   const st = t => t.revoked_at ? `<span class="faint">폐기 ${fmtT(t.revoked_at)}</span>` : t.expires_at && t.expires_at < now ? `<span class="c-medium">만료</span>` : `<span class="acc">사용 중</span>`;
-  box.innerHTML = `<p class="hint">다른 시스템(Prometheus·스크립트)이 RKMSIEM 을 <b>읽을 때</b> 쓰는 열쇠입니다. 읽기 권한만 줄 수 있고, 토큰 값은 <b>만들 때 한 번만</b> 보입니다 (DB 에는 해시만).
-      사람 계정 로그인과 2단계 인증은 그대로이고, 토큰으로는 설정을 바꾸거나 조치를 실행할 수 없습니다.</p>
+  box.innerHTML = `<p class="hint">다른 시스템(Prometheus·스크립트·추가 기능)이 RKMSIEM 에 붙을 때 쓰는 열쇠입니다. 토큰 값은 <b>만들 때 한 번만</b> 보입니다 (DB 에는 해시만).
+      설정 변경·사용자 관리·토큰 만들기는 어떤 토큰으로도 안 되고, 쓰기 권한 토큰이 한 조치는 감사 로그에 <code>token:&lt;이름&gt;</code> 으로 남습니다.</p>
     <div class="st-reset"><div class="st-ch"><b>새 토큰</b><small>이름은 쓰는 곳으로 (예: prometheus-lab)</small></div>
       <div class="st-row"><input class="tk-name" placeholder="이름" maxlength="64" style="flex:1;min-width:180px"><select class="tk-exp" style="flex:0 0 auto;width:auto"><option value="">만료 없음</option><option value="30">30일</option><option value="90" selected>90일</option><option value="365">1년</option></select></div>
-      <div class="st-row">${r.scopes.map(s => `<label class="st-chk"><input type="checkbox" class="tk-scope" value="${esc(s)}" ${s === "metrics:read" ? "checked" : ""}> ${esc(TOKEN_SCOPE_KO[s] || s)}</label>`).join("")}</div>
+      <div class="st-row"><span class="faint">읽기</span> ${r.scopes.filter(s => !TOKEN_WRITE.has(s)).map(s => `<label class="st-chk"><input type="checkbox" class="tk-scope" value="${esc(s)}" ${s === "metrics:read" ? "checked" : ""}> ${esc(TOKEN_SCOPE_KO[s] || s)}</label>`).join("")}</div>
+      <div class="st-row"><span class="c-high">쓰기</span> ${r.scopes.filter(s => TOKEN_WRITE.has(s)).map(s => `<label class="st-chk"><input type="checkbox" class="tk-scope" value="${esc(s)}"> ${esc(TOKEN_SCOPE_KO[s] || s)}</label>`).join("")}
+        <span class="faint">— 추가 기능(HSOAR 등)용. 보통은 'sudo rkmsiem-setup → 추가 기능' 이 알아서 만듭니다</span></div>
       <div class="st-row"><button class="btn primary" data-tk="create">토큰 만들기</button></div>
       <div class="tk-new"></div></div>
     <h4 style="margin:16px 0 8px;font:700 14px var(--ko)">토큰 목록</h4>
@@ -390,6 +395,7 @@ async function stTokens(box) {
     const name = $(".tk-name", box).value.trim(), scopes = $$(".tk-scope:checked", box).map(x => x.value), exp = $(".tk-exp", box).value;
     if (!name) { shake($(".tk-name", box), 5); return; }
     if (!scopes.length) { toast(`<span class="err">권한을 하나 이상 고르세요</span>`, "critical"); return; }
+    if (scopes.some(x => TOKEN_WRITE.has(x)) && !confirm("쓰기 권한(조치·사건 변경)이 있는 토큰입니다. 이 토큰을 가진 쪽은 차단·잠금 같은 조치를 할 수 있습니다. 만들까요?")) return;
     e.target.disabled = true;
     try {
       const t = await api("/api/tokens", { method: "POST", body: { name, scopes, expires_days: exp ? +exp : null } });
