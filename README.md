@@ -159,7 +159,7 @@ python -m pytest tests test_detector.py --junitxml=reports/test-report.xml
 | `tests/test_p8_ubuntu.py` | 실제 Ubuntu auth.log(22.04·24.04)·journald 형식 · 운영 설정 유효성 · nft/헬퍼 명령 인자 · live 플레이북→실제 명령 · 재시작 시 차단 재적용 · 차단 금지 대역 · 위협 인텔 피드 · 비밀번호 변경 · 자가 점검 |
 | `test_detector.py` | 기존 테스트(수정 없이) — 새 엔진/설정으로도 통과 |
 
-최근 결과: **144 passed, 1 skipped** (Python 3.10 · 3.12 · 3.15 각각) · 부하: 로컬에서 약 3,350 events/s (HTTP 배치 500건) · `pyflakes` 경고 0
+최근 결과: **144 passed, 1 skipped** (Python 3.13) · 부하: 로컬에서 약 3,350 events/s (HTTP 배치 500건, 이전 측정)
 
 ## 5. 보안
 
