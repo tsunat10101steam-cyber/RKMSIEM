@@ -31,6 +31,8 @@ case "${VERSION_ID:-}" in 22.04|24.04|24.10|25.04) ;; *) echo "⚠ 검증 대상
 
 APP=/opt/rkmsiem; ETC=/etc/rkmsiem; DATA=/var/lib/rkmsiem; LIB=/usr/local/lib/rkmsiem
 step() { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
+# ufw 출력은 서버 언어에 따라 번역됨("상태: 활성"·"허용") — 판단·파싱은 항상 영어 출력으로
+ufw() { LANGUAGE= LC_ALL=C command ufw "$@"; }
 
 step "네트워크 · DNS 확인"
 grep -qw "$(hostname)" /etc/hosts || { echo "127.0.1.1 $(hostname)" >> /etc/hosts; echo "  /etc/hosts 에 호스트 이름 $(hostname) 추가 (sudo 경고 해결)"; }

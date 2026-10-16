@@ -34,6 +34,8 @@ fingerprint() { openssl x509 -in "$CRT" -noout -fingerprint -sha256 | sed 's/.*=
 setenv() {   # 파일 키 값 — 있으면 바꾸고 없으면 추가
 	if grep -q "^$2=" "$1"; then sed -i "s#^$2=.*#$2=$3#" "$1"; else echo "$2=$3" >> "$1"; fi
 }
+# ufw 출력은 서버 언어에 따라 번역됨("상태: 활성"·"허용") — 판단·파싱은 항상 영어 출력으로
+ufw() { LANGUAGE= LC_ALL=C command ufw "$@"; }
 ufw_on() { command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; }
 wait_ready() { for _ in $(seq 1 40); do curl -fsS "$1" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
 show() {

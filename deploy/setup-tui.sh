@@ -69,6 +69,8 @@ except ValueError as e:
 PY
 }
 
+# ufw 출력은 서버 언어에 따라 번역됨("상태: 활성"·"허용") — 판단·파싱은 항상 영어 출력으로
+ufw() { LANGUAGE= LC_ALL=C command ufw "$@"; }
 ufw_active() { command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; }
 
 tls_on() { [ -e /etc/nginx/sites-enabled/rkmsiem ] && [ -s "$ETC/tls/rkmsiem.crt" ]; }
