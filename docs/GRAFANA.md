@@ -8,7 +8,18 @@ RKMSIEM 과 Grafana 를 세 가지로 잇는다. 필요한 것만 쓰면 된다.
 | ② Grafana 를 콘솔 안에 | 브라우저 → `https://<서버>:8443/grafana/` | `sudo rkmsiem-grafana` |
 | ③ 대시보드 칸에 Grafana 그래프 | `dashboard all` 의 칸을 Grafana 패널로 바꾸거나 뒤에 추가 | 콘솔 `settings → API 토큰 · Grafana` |
 
-(반대 방향 — Prometheus 경보를 RKMSIEM 이 가져오기 — 는 `settings → 당겨오기` 의 Prometheus 프리셋.)
+| ④ Grafana 경보를 RKMSIEM 으로 | RKMSIEM → Grafana 경보 API (당겨오기) | 콘솔 `settings → 당겨오기 → Grafana 경보` |
+
+## ④ Grafana 경보 당겨오기 (외부 소스)
+
+Grafana 도 다른 외부 시스템처럼 **당겨오기**로 추가한다. Grafana 경보 규칙(Grafana-managed)이 울리면 RKMSIEM 이벤트가 되고,
+기본 규칙 '외부 시스템 경보'가 경보·사건으로 묶는다 (Grafana `severity` 라벨 반영).
+
+1. Grafana → Administration → Service accounts → 새 계정(역할 Viewer) → 토큰 만들기 (`glsa_…`)
+2. 콘솔 `dashboard settings pull` → **Grafana 경보** 프리셋 → 토큰 칸에 붙여 넣기 → **지금 시험** → 저장
+   - 주소: `http://127.0.0.1:3000/api/prometheus/grafana/api/v1/alerts` (같은 서버) · 다른 서버면 `https://…` (인증 정보는 https 로만)
+   - 울리는 것(`Alerting`)만, 같은 경보는 한 번만 (규칙 uid·이름·instance·시작 시각)
+- Prometheus 자체 경보는 같은 탭의 **Prometheus 경보** 프리셋.
 
 ## ① Prometheus 가 RKMSIEM 지표를 수집
 
