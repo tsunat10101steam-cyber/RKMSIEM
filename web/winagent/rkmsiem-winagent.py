@@ -487,6 +487,11 @@ def setup_console():
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):                 # 윈도우 콘솔(cp1252)에서 한글 출력이 터지지 않게
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     if "--setup" in sys.argv:
         if "--console" in sys.argv:
             return setup_console()

@@ -20,14 +20,13 @@ SRC = os.path.join(HERE, "rkmsiem-winagent.py")
 
 def main():
     if sys.platform != "win32":
-        sys.stderr.write("이 스크립트는 윈도우에서 실행하세요 (exe 는 빌드한 OS 용으로 나옵니다).\n")
-        # 그래도 명령은 보여 줌
+        sys.stderr.write("Run this on Windows (the exe is built for the OS it runs on).\n")
     cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--console",
            "--name", "rkmsiem-winagent",
            "--distpath", os.path.join(HERE, "dist"),
            "--workpath", os.path.join(HERE, "build"),
            "--specpath", HERE, SRC]
-    print("실행:", " ".join(cmd))
+    print("running:", " ".join(cmd))
     return subprocess.call(cmd)
 
 
