@@ -40,6 +40,15 @@ api:
   login_rate_per_min: 10
   stream_heartbeat_sec: 15
 
+agent_socket:                   # 윈도우 클라이언트(엔드포인트 에이전트) 소켓 서버 — TLS 소켓 위 JSON (rkmsiem/agent_socket.py)
+  enabled: false                # 켜면 serve 가 아래 포트로 리슨 (클라이언트가 '나가서' 붙는다 — 서버는 공개 주소 1개만)
+  host: 0.0.0.0
+  port: 8452
+  tls: true                     # rkmsiem 자체 인증서 사용 (deploy/tls.sh 가 만든 것)
+  cert: /etc/rkmsiem/tls/rkmsiem.crt
+  key: /etc/rkmsiem/tls/rkmsiem.key
+  telemetry_source: http-json   # 클라이언트가 올린 이벤트를 넣을 수집 소스(http 형) — 파서·필드맵 재사용
+
 connect:                        # 연동 화면 — 당겨오기 소스의 '화면(view)'을 콘솔 명령 connect 로 (rkmsiem/connect.py)
   port: 8445                    # 연동 화면 전용 HTTPS 포트 (콘솔과 다른 출처 — deploy/tls.sh 가 nginx 에 만듦)
   public_origin: ""             # 브라우저가 보는 주소가 다를 때만 (예: VMware NAT 포워딩 https://192.168.0.10:18445)

@@ -1,0 +1,82 @@
+# 윈도우 클라이언트 (엔드포인트 에이전트)
+
+리눅스 **서버**(RKMSIEM)에 윈도우 PC가 **클라이언트**로 붙는 구조. 클라이언트가 서버로 *나가서*(아웃바운드) TLS 소켓 하나를 열고, 그 위로 서버가 할 일을 내려보낸다. 윈도우에 공개 포트를 열 필요가 없다.
+
+```
+Windows PC (exe) ──TLS 소켓(JSON)──▶ RKMSIEM 서버 :8452
+   · 상태·보안 로그 보고(telemetry)        · 조치 명령 내려보냄 → PC 에서 실행
+```
+
+HTTP 롱폴링 에이전트(`web/agent/`, 리눅스)와 **같은 두뇌**(토큰·작업큐·결과·인벤토리, `rkmsiem/agents.py`)를 쓴다. 전송만 지속 소켓이라, 콘솔의 **에이전트** 화면·`/api/agents`·사건 타임라인에 똑같이 나온다.
+
+## 서버 쪽 켜기 (리눅스)
+
+`/etc/rkmsiem/rkmsiem.yaml` (또는 `config/settings.yaml`):
+
+```yaml
+agent_socket:
+  enabled: true          # 켜고 재시작
+  port: 8452
+  tls: true              # rkmsiem 자체 인증서 (deploy/tls.sh 가 만든 것)
+  telemetry_source: http-json
+```
+
+```bash
+sudo ufw allow 8452/tcp              # 클라이언트가 붙을 포트
+sudo systemctl restart rkmsiem
+```
+
+인증서 지문 확인(클라이언트가 핀으로 씀):
+```bash
+sudo /usr/share/rkmsiem/deploy/tls.sh --show      # SHA-256 지문
+```
+
+## exe 빌드 (윈도우)
+
+```
+py -m pip install --upgrade pyinstaller
+py web\winagent\build-exe.py
+→ web\winagent\dist\rkmsiem-winagent.exe
+```
+
+표준 라이브러리만 쓰므로 추가 의존성은 없다.
+
+## 설치·설정 (윈도우)
+
+1. 콘솔 → **에이전트** → 등록 코드 발급 (`rke_…`, 1시간 1회용) — 리눅스 에이전트와 같은 버튼
+2. `%ProgramData%\RKMSIEM\winagent.env` 작성:
+   ```
+   RKMSIEM_HOST=10.0.0.53
+   RKMSIEM_PORT=8452
+   RKMSIEM_FINGERPRINT=<tls.sh --show 의 지문>
+   ENROLL_CODE=rke_...            # 첫 연결 뒤에는 지워도 됨 (토큰이 저장됨)
+   ALLOW=process_kill,service_restart
+   TELEMETRY=1
+   ```
+3. 실행 (관리자 권한 — 조치·보안 로그 읽기 때문):
+   ```
+   rkmsiem-winagent.exe
+   ```
+   서비스로 늘 켜 두려면 `sc create RKMSIEMAgent binPath= "C:\path\rkmsiem-winagent.exe" start= auto` + `sc start RKMSIEMAgent` (또는 작업 스케줄러 '시스템 시작 시').
+
+첫 연결이 되면 콘솔 **에이전트** 목록에 이 PC 가 온라인으로 뜬다.
+
+## 할 수 있는 조치
+
+| 조치 | 하는 일 | 필수 입력 |
+|---|---|---|
+| `process_kill` | `taskkill /PID <pid> /F /T` | pid |
+| `service_restart` | `sc stop` → `sc start` | service |
+
+무엇을 허용할지는 **클라이언트의 `ALLOW`** 가 정한다 (비우면 보고·텔레메트리만). 서버가 털려도 `ALLOW` 밖의 일은 못 한다.
+`PROTECT_PROCESSES`(기본 System·lsass·winlogon 등)·`PROTECT_SERVICES`(기본 WinDefend·EventLog 등)에 든 것은 **클라이언트가 스스로 거부**한다.
+
+## 텔레메트리
+
+`TELEMETRY=1` 이면 보안 로그의 **실패 로그온(이벤트 4625)**을 주기적으로 서버의 `http-json` 수집 소스로 올린다 → 무차별 대입·스프레이 같은 탐지 규칙이 윈도우 PC 까지 본다.
+
+## 보안
+
+- TLS 소켓 + 서버 인증서 **지문 핀**(자체 서명이라 CA 대신 지문으로 확인). 지문이 다르면 연결하지 않음. 내부망 테스트로 TLS 없이 쓰려면 `RKMSIEM_INSECURE=1`.
+- 토큰(`rka_…`)은 `%ProgramData%\RKMSIEM\token` 에 저장, 서버 DB 에는 해시만. 콘솔에서 해제하면 즉시 무효.
+- 조치 기록은 `token:agent:<이름>` 으로 감사 로그·사건 타임라인에 남는다.

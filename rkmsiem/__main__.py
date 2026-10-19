@@ -154,6 +154,11 @@ def main(argv=None):
         if p.config_report["rejected"]:
             print("⚠ 거부된 설정:", json.dumps(p.config_report["rejected"], ensure_ascii=False))
         p.start(collectors=not a.no_collectors)
+        agentsock = None
+        if s.get("agent_socket.enabled"):
+            from .agent_socket import AgentSocketServer
+            agentsock = AgentSocketServer(p, s).start()
+            print(f"에이전트 소켓(윈도우 클라이언트): {s.get('agent_socket.host')}:{agentsock.port} (tls={bool(s.get('agent_socket.tls'))})")
         host, port = s.get("api.host"), s.get("api.port")
         print(f"RKMSIEM on http://{host}:{port}  (soar mode: {s.get('soar.mode')}, "
               f"firewall: {'nftables' if p.response.firewall else 'none'}, accounts: {'helper' if p.response.accounts else 'none'})")
@@ -172,6 +177,8 @@ def main(argv=None):
                 signal.signal(signal.SIGTERM, lambda *_: (p.stop(), sys.exit(0)))
                 app.run(host=host, port=port, threaded=True, use_reloader=False)
         finally:
+            if agentsock:
+                agentsock.stop()
             p.stop()
         return 0
 
