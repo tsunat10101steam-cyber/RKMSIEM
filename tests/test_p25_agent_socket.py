@@ -262,3 +262,13 @@ def test_probe_fingerprint_against_tls_server(tmp_path):
 
     assert got == hashlib.sha256(der).hexdigest()
     srv.close()
+
+
+def test_load_env_tolerates_ansi_encoded_file(tmp_path, monkeypatch):
+    """설치 프로그램이 ANSI(cp949)로 쓴 주석이 섞여 있어도 KEY=VALUE 는 읽혀야 (UnicodeDecodeError 로 죽지 않음)."""
+    wa = _load_winagent()
+    p = tmp_path / "winagent.env"
+    p.write_bytes("# 한글 주석".encode("cp949") + b"\nRKMSIEM_HOST=10.0.0.53\nRKMSIEM_PORT=8452\nALLOW=process_kill\n")
+    monkeypatch.setenv("WINAGENT_ENV", str(p))
+    env = wa.load_env()
+    assert env["RKMSIEM_HOST"] == "10.0.0.53" and env["RKMSIEM_PORT"] == "8452" and env["ALLOW"] == "process_kill"

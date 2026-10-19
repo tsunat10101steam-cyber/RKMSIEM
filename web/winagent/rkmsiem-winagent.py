@@ -48,7 +48,7 @@ def load_env():
     env = {}
     path = os.environ.get("WINAGENT_ENV") or os.path.join(_state_dir(), "winagent.env")
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:   # 설치 프로그램이 ANSI 로 쓴 주석 등에 관대하게
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
