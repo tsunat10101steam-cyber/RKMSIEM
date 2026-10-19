@@ -43,3 +43,30 @@ jobs:
           git log --no-merges --format='- %s' ${PREV:+$PREV..}HEAD > notes.txt
           gh release create "v$V" --target "$GITHUB_SHA" --title "RKMSIEM v$V" --notes-file notes.txt \
             dist/rkmsiem_all.deb "dist/rkmsiem_${V}_all.deb" "dist/rkmsiem-v${V}.tgz"
+
+  # 윈도우 클라이언트(엔드포인트 에이전트) 단일 exe — windows 러너에서 빌드해 같은 릴리스에 올림
+  winagent:
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 버전
+        shell: bash
+        env:
+          IN: ${{ inputs.version }}
+        run: |
+          V="${IN:-${GITHUB_REF_NAME#v}}"; V="${V#v}"
+          echo "V=$V" >> "$GITHUB_ENV"
+      - name: exe 빌드 (PyInstaller · 표준 라이브러리만)
+        shell: bash
+        run: |
+          pip install -q pyinstaller
+          python web/winagent/build-exe.py
+      - name: 릴리스에 올리기
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v$V" web/winagent/dist/rkmsiem-winagent.exe --clobber

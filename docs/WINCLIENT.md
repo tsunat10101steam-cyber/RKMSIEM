@@ -31,8 +31,15 @@ sudo systemctl restart rkmsiem
 sudo /usr/share/rkmsiem/deploy/tls.sh --show      # SHA-256 지문
 ```
 
-## exe 빌드 (윈도우)
+## 내려받기 (완성 exe)
 
+릴리스마다 윈도우 러너가 빌드해 **GitHub 릴리스에 올린다**:
+
+```
+https://github.com/<조직>/RKMSIEM/releases/latest → rkmsiem-winagent.exe
+```
+
+직접 빌드하려면 (윈도우):
 ```
 py -m pip install --upgrade pyinstaller
 py web\winagent\build-exe.py
