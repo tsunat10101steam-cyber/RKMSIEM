@@ -41,25 +41,35 @@ py web\winagent\build-exe.py
 
 표준 라이브러리만 쓰므로 추가 의존성은 없다.
 
-## 설치·설정 (윈도우)
+## 설치 마법사 (권장)
 
 1. 콘솔 → **에이전트** → 등록 코드 발급 (`rke_…`, 1시간 1회용) — 리눅스 에이전트와 같은 버튼
-2. `%ProgramData%\RKMSIEM\winagent.env` 작성:
+2. exe 를 **관리자 권한**으로 실행:
    ```
-   RKMSIEM_HOST=10.0.0.53
-   RKMSIEM_PORT=8452
-   RKMSIEM_FINGERPRINT=<tls.sh --show 의 지문>
-   ENROLL_CODE=rke_...            # 첫 연결 뒤에는 지워도 됨 (토큰이 저장됨)
-   ALLOW=process_kill,service_restart
-   TELEMETRY=1
+   rkmsiem-winagent.exe --setup
    ```
-3. 실행 (관리자 권한 — 조치·보안 로그 읽기 때문):
-   ```
-   rkmsiem-winagent.exe
-   ```
-   서비스로 늘 켜 두려면 `sc create RKMSIEMAgent binPath= "C:\path\rkmsiem-winagent.exe" start= auto` + `sc start RKMSIEMAgent` (또는 작업 스케줄러 '시스템 시작 시').
+   창(마법사)이 뜬다 — 서버 주소·포트·등록 코드를 넣고:
+   - **지문 가져오기** → 서버 인증서 지문을 자동으로 채움 (서버의 `tls.sh --show` 값과 같은지 확인)
+   - **연결 테스트** → 지문·연결 확인
+   - 허용 조치(프로세스 종료·서비스 재시작)·보안 로그 보고 선택
+   - **저장** (`%ProgramData%\RKMSIEM\winagent.env`) → **서비스로 설치·시작** (부팅 시 SYSTEM 으로 자동 실행, schtasks `RKMSIEMAgent`)
+   - GUI 가 없는 환경이면 자동으로 콘솔 질문 방식으로 (`--setup --console`)
 
 첫 연결이 되면 콘솔 **에이전트** 목록에 이 PC 가 온라인으로 뜬다.
+
+### 수동 설정 (마법사 대신)
+
+`%ProgramData%\RKMSIEM\winagent.env` 를 직접 써도 된다:
+```
+RKMSIEM_HOST=10.0.0.53
+RKMSIEM_PORT=8452
+RKMSIEM_FINGERPRINT=<tls.sh --show 의 지문>
+ENROLL_CODE=rke_...            # 첫 연결 뒤에는 지워도 됨 (토큰이 저장됨)
+ALLOW=process_kill,service_restart
+TELEMETRY=1
+```
+그다음 `rkmsiem-winagent.exe` (서비스로 늘 켜 두려면 마법사의 '서비스로 설치·시작', 또는
+`schtasks /create /tn RKMSIEMAgent /tr "경로\rkmsiem-winagent.exe" /sc onstart /ru SYSTEM /rl HIGHEST`).
 
 ## 할 수 있는 조치
 

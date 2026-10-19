@@ -321,11 +321,185 @@ class AgentClient:
         self.sock = self.f = None
 
 
+# ================================================================== 설치 마법사
+ENV_KEYS = ("RKMSIEM_HOST", "RKMSIEM_PORT", "RKMSIEM_FINGERPRINT", "ENROLL_CODE",
+            "ALLOW", "PROTECT_PROCESSES", "PROTECT_SERVICES", "TELEMETRY", "RKMSIEM_INSECURE")
+TASK_NAME = "RKMSIEMAgent"
+
+
+def env_path(state_dir=None):
+    return os.path.join(state_dir or _state_dir(), "winagent.env")
+
+
+def write_config(values, state_dir=None):
+    """winagent.env 저장. 값에 줄바꿈·따옴표가 없게 정리 (설정 파일 형식 보호)."""
+    d = state_dir or _state_dir()
+    os.makedirs(d, exist_ok=True)
+    lines = ["# RKMSIEM 윈도우 클라이언트 설정 (설치 마법사가 생성)"]
+    for k in ENV_KEYS:
+        v = str(values.get(k, "")).replace("\r", "").replace("\n", " ").strip()
+        if v:
+            lines.append(f"{k}={v}")
+    path = env_path(d)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
+def probe_fingerprint(host, port, timeout=10):
+    """서버에 TLS 로 붙어 인증서 SHA-256 지문을 가져온다 (마법사에서 사용자가 tls.sh --show 값과 대조)."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with socket.create_connection((host, int(port)), timeout=timeout) as raw:
+        with ctx.wrap_socket(raw, server_hostname=host) as s:
+            return hashlib.sha256(s.getpeercert(binary_form=True)).hexdigest()
+
+
+def test_connection(values):
+    """설정값으로 실제 핸드셰이크까지 — (ok, 메시지). 등록 코드가 있으면 등록도 시도(1회용 소모 주의는 호출부에서)."""
+    env = dict(values)
+    cli = AgentClient(values.get("RKMSIEM_HOST", ""), values.get("RKMSIEM_PORT", "8452"), env)
+    try:
+        cli.connect()
+    except OSError as e:
+        return False, f"연결 실패: {e}"
+    finally:
+        pass
+    cli._close()
+    return True, "연결·인증서 지문 확인됨"
+
+
+def service_exe():
+    """설치된 exe 경로 (PyInstaller 로 얼리면 sys.executable 이 그 exe)."""
+    return sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
+
+
+def build_service_cmd(exe):
+    """부팅 시 SYSTEM 으로 자동 실행 — schtasks (콘솔 exe 를 서비스로 띄우는 SCM 배선보다 안정적)."""
+    return ["schtasks", "/create", "/tn", TASK_NAME, "/tr", f'"{exe}"',
+            "/sc", "onstart", "/ru", "SYSTEM", "/rl", "HIGHEST", "/f"]
+
+
+def install_service(run=run_cmd):
+    rc, out = run(build_service_cmd(service_exe()), timeout=30)
+    if rc != 0:
+        return False, f"작업 등록 실패(rc={rc}): {out.strip()[:200]}"
+    run(["schtasks", "/run", "/tn", TASK_NAME], timeout=15)
+    return True, f"'{TASK_NAME}' 작업으로 등록·시작됨 (부팅 시 자동 실행)"
+
+
+def setup_gui():
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+
+    cur = load_env()
+    root = tk.Tk()
+    root.title("RKMSIEM 윈도우 클라이언트 설정")
+    root.resizable(False, False)
+    frm = ttk.Frame(root, padding=16)
+    frm.grid()
+    vals = {}
+
+    def row(r, label, key, default="", show=None, width=46):
+        ttk.Label(frm, text=label).grid(row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        v = tk.StringVar(value=cur.get(key, default))
+        ttk.Entry(frm, textvariable=v, width=width, show=show).grid(row=r, column=1, sticky="w", pady=4)
+        vals[key] = v
+
+    row(0, "서버 주소", "RKMSIEM_HOST")
+    row(1, "포트", "RKMSIEM_PORT", "8452")
+    row(2, "인증서 지문 (SHA-256)", "RKMSIEM_FINGERPRINT")
+    row(3, "등록 코드 (rke_…)", "ENROLL_CODE")
+
+    tel = tk.BooleanVar(value=cur.get("TELEMETRY") == "1")
+    kill = tk.BooleanVar(value="process_kill" in (cur.get("ALLOW", "process_kill,service_restart")))
+    svc = tk.BooleanVar(value="service_restart" in (cur.get("ALLOW", "process_kill,service_restart")))
+    ttk.Checkbutton(frm, text="프로세스 종료 허용", variable=kill).grid(row=4, column=1, sticky="w")
+    ttk.Checkbutton(frm, text="서비스 재시작 허용", variable=svc).grid(row=5, column=1, sticky="w")
+    ttk.Checkbutton(frm, text="보안 로그(실패 로그온) 보고", variable=tel).grid(row=6, column=1, sticky="w")
+    status = ttk.Label(frm, text="", foreground="#555", wraplength=380)
+    status.grid(row=10, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+    def collect():
+        allow = ",".join([a for a, on in (("process_kill", kill.get()), ("service_restart", svc.get())) if on])
+        return {"RKMSIEM_HOST": vals["RKMSIEM_HOST"].get().strip(),
+                "RKMSIEM_PORT": vals["RKMSIEM_PORT"].get().strip() or "8452",
+                "RKMSIEM_FINGERPRINT": vals["RKMSIEM_FINGERPRINT"].get().strip().replace(":", "").lower(),
+                "ENROLL_CODE": vals["ENROLL_CODE"].get().strip(),
+                "ALLOW": allow, "TELEMETRY": "1" if tel.get() else "0"}
+
+    def do_fetch_fp():
+        v = collect()
+        try:
+            fp = probe_fingerprint(v["RKMSIEM_HOST"], v["RKMSIEM_PORT"])
+        except OSError as e:
+            messagebox.showerror("지문 가져오기", f"실패: {e}")
+            return
+        vals["RKMSIEM_FINGERPRINT"].set(fp)
+        messagebox.showinfo("지문 가져오기", f"서버 인증서 지문:\n{fp}\n\n서버에서 'tls.sh --show' 값과 같은지 꼭 확인하세요.")
+
+    def do_test():
+        ok, msg = test_connection(collect())
+        status.config(text=msg, foreground="#1a7f37" if ok else "#b00")
+
+    def do_save():
+        p = write_config(collect())
+        status.config(text=f"저장됨: {p}", foreground="#1a7f37")
+
+    def do_install():
+        write_config(collect())
+        ok, msg = install_service()
+        status.config(text=msg, foreground="#1a7f37" if ok else "#b00")
+        if ok:
+            messagebox.showinfo("설치 완료", msg)
+
+    btns = ttk.Frame(frm)
+    btns.grid(row=11, column=0, columnspan=2, pady=(12, 0), sticky="w")
+    ttk.Button(btns, text="지문 가져오기", command=do_fetch_fp).grid(row=0, column=0, padx=4)
+    ttk.Button(btns, text="연결 테스트", command=do_test).grid(row=0, column=1, padx=4)
+    ttk.Button(btns, text="저장", command=do_save).grid(row=0, column=2, padx=4)
+    ttk.Button(btns, text="서비스로 설치·시작", command=do_install).grid(row=0, column=3, padx=4)
+    root.mainloop()
+
+
+def setup_console():
+    """GUI 가 없을 때(헤드리스) — 질문해서 winagent.env 생성."""
+    cur = load_env()
+
+    def ask(label, key, default=""):
+        d = cur.get(key, default)
+        v = input(f"{label}{f' [{d}]' if d else ''}: ").strip()
+        return v or d
+
+    vals = {"RKMSIEM_HOST": ask("서버 주소", "RKMSIEM_HOST"),
+            "RKMSIEM_PORT": ask("포트", "RKMSIEM_PORT", "8452"),
+            "RKMSIEM_FINGERPRINT": ask("인증서 지문", "RKMSIEM_FINGERPRINT").replace(":", "").lower(),
+            "ENROLL_CODE": ask("등록 코드 (rke_…)", "ENROLL_CODE"),
+            "ALLOW": ask("허용 조치", "ALLOW", "process_kill,service_restart"),
+            "TELEMETRY": ask("보안 로그 보고(1/0)", "TELEMETRY", "1")}
+    path = write_config(vals)
+    print(f"저장됨: {path}")
+    if input("부팅 시 자동 실행 작업으로 등록할까요? (y/N): ").strip().lower() == "y":
+        ok, msg = install_service()
+        print(msg)
+    return 0
+
+
 def main():
+    if "--setup" in sys.argv:
+        if "--console" in sys.argv:
+            return setup_console()
+        try:
+            setup_gui()
+            return 0
+        except Exception as e:                                  # noqa: BLE001  GUI 불가 → 콘솔로
+            sys.stderr.write(f"GUI 를 열 수 없어 콘솔 설정으로 전환합니다: {e}\n")
+            return setup_console()
     env = load_env()
     host = env.get("RKMSIEM_HOST")
     if not host:
-        sys.stderr.write("RKMSIEM_HOST 가 필요합니다 (서버 주소)\n")
+        sys.stderr.write("설정이 없습니다 — 먼저 'rkmsiem-winagent.exe --setup' 으로 설치 마법사를 실행하세요\n")
         return 2
     cli = AgentClient(host, env.get("RKMSIEM_PORT", "8452"), env)
     import signal

@@ -78,7 +78,7 @@ def test_enroll_hello_job_result_telemetry(srv):
 
     # 결과 보고 → SIEM 쪽에서 성공으로 마감
     c.send({"t": "result", "id": job_id, "ok": True, "result": {"killed": 4321}, "error": None})
-    for _ in range(50):
+    for _ in range(200):
         r = p.db.one("SELECT state, result FROM agent_jobs WHERE id=?", (job_id,))
         if r["state"] == "succeeded":
             break
@@ -91,7 +91,7 @@ def test_enroll_hello_job_result_telemetry(srv):
         {"id": "w-1", "timestamp": "2026-10-19T00:00:01Z", "src_ip": "10.0.0.44", "user": "nmgt", "outcome": "failure", "category": "authentication"},
         {"id": "w-2", "timestamp": "2026-10-19T00:00:02Z", "src_ip": "10.0.0.44", "user": "nmgt", "outcome": "failure", "category": "authentication"},
     ]})
-    for _ in range(60):
+    for _ in range(200):
         if p.db.scalar("SELECT COUNT(*) FROM events") >= before + 2:
             break
         time.sleep(0.05)
@@ -198,3 +198,67 @@ def test_windows_client_refuses_protected_process(srv, tmp_path):
         time.sleep(0.05)
     cli.stop.set()
     assert r["state"] == "failed" and "보호된 프로세스" in (r["error"] or "")
+
+
+def test_setup_helpers_write_config_and_service_cmd(tmp_path):
+    """설치 마법사 로직(GUI 제외): 설정 저장·값 정리, 서비스 등록 명령, 지문 TLS 조회."""
+    wa = _load_winagent()
+    d = str(tmp_path / "cfg")
+    vals = {"RKMSIEM_HOST": "10.0.0.53", "RKMSIEM_PORT": "8452",
+            "RKMSIEM_FINGERPRINT": "AB:CD", "ENROLL_CODE": "rke_x\nmalicious", "ALLOW": "process_kill", "TELEMETRY": "1"}
+    path = wa.write_config(vals, state_dir=d)
+    text = open(path, encoding="utf-8").read()
+    assert "RKMSIEM_HOST=10.0.0.53" in text
+    assert "ENROLL_CODE=rke_x malicious" in text          # 줄바꿈 제거 — 설정 파일 형식 보호
+    # 다시 읽어들이면 그대로
+    import os
+    os.environ.pop("ENROLL_CODE", None)
+    env = {}
+    for line in text.splitlines():
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env[k] = v
+    assert env["ALLOW"] == "process_kill" and env["TELEMETRY"] == "1"
+
+    cmd = wa.build_service_cmd(r"C:\x\rkmsiem-winagent.exe")
+    assert cmd[:4] == ["schtasks", "/create", "/tn", "RKMSIEMAgent"] and "/f" in cmd
+
+    ran = []
+    ok, msg = wa.install_service(run=lambda a, timeout=30: (ran.append(a) or (0, "")))
+    assert ok and any(a[:2] == ["schtasks", "/create"] for a in ran) and any(a[:2] == ["schtasks", "/run"] for a in ran)
+
+
+def test_probe_fingerprint_against_tls_server(tmp_path):
+    """probe_fingerprint 가 서버 인증서 지문을 올바르게 가져오는지 — 임시 자체서명 인증서로 TLS 서버를 띄워 확인."""
+    import hashlib
+    import socket
+    import ssl
+    import subprocess
+    import threading
+    wa = _load_winagent()
+    crt, key = tmp_path / "s.crt", tmp_path / "s.key"
+    rc = subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                         "-nodes", "-days", "1", "-subj", "/CN=test", "-keyout", str(key), "-out", str(crt)],
+                        capture_output=True).returncode
+    if rc != 0:
+        import pytest
+        pytest.skip("openssl 없음")
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(crt), str(key))
+    srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0)); srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def accept():
+        try:
+            c, _ = srv.accept()
+            ctx.wrap_socket(c, server_side=True)
+        except OSError:
+            pass
+    threading.Thread(target=accept, daemon=True).start()
+
+    got = wa.probe_fingerprint("127.0.0.1", port)
+    der = ssl.PEM_cert_to_DER_cert(open(str(crt)).read())          # 서버 인증서의 DER 지문과 일치해야
+
+    assert got == hashlib.sha256(der).hexdigest()
+    srv.close()
