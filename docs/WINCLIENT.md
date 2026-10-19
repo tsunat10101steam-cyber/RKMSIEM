@@ -31,22 +31,22 @@ sudo systemctl restart rkmsiem
 sudo /usr/share/rkmsiem/deploy/tls.sh --show      # SHA-256 지문
 ```
 
-## 내려받기 (완성 exe)
+## 내려받기·설치 (윈도우)
 
-릴리스마다 윈도우 러너가 빌드해 **GitHub 릴리스에 올린다**:
+릴리스마다 **설치 마법사**를 빌드해 GitHub 릴리스에 올린다:
 
 ```
-https://github.com/<조직>/RKMSIEM/releases/latest → rkmsiem-winagent.exe
+https://github.com/<조직>/RKMSIEM/releases/latest → rkmsiem-winagent-setup.exe
 ```
 
-직접 빌드하려면 (윈도우):
-```
-py -m pip install --upgrade pyinstaller
-py web\winagent\build-exe.py
-→ web\winagent\dist\rkmsiem-winagent.exe
-```
+**`rkmsiem-winagent-setup.exe` 를 더블클릭** → 일반 프로그램처럼 설치 마법사 GUI 가 뜬다
+(다음 → 설치 폴더 → **서버 주소·포트·지문·등록 코드 입력** → 허용 조치 선택 → 설치 → 완료).
+설치가 끝나면 설정 파일(`%ProgramData%\RKMSIEM\winagent.env`)을 자동으로 쓰고,
+부팅 시 SYSTEM 으로 자동 실행되는 작업(`RKMSIEMAgent`)을 등록·시작한다. **명령줄·`--setup` 불필요.**
 
-표준 라이브러리만 쓰므로 추가 의존성은 없다.
+같은 릴리스에 **단일 실행 파일** `rkmsiem-winagent.exe` 도 있다(설치 없이 직접 돌리거나 `--setup` 으로 설정할 때).
+
+직접 빌드 (윈도우): `py web\winagent\build-exe.py` (exe) → Inno Setup `ISCC installer.iss` (설치 마법사). 표준 라이브러리만 쓰므로 추가 의존성은 없다.
 
 ## 설치 마법사 (권장)
 

@@ -65,8 +65,16 @@ jobs:
         run: |
           pip install -q pyinstaller
           python web/winagent/build-exe.py
-      - name: 릴리스에 올리기
+      - name: 설치 마법사 빌드 (Inno Setup)
+        shell: bash
+        run: |
+          choco install innosetup -y --no-progress
+          ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          "$ISCC" "//DAppVersion=$V" web/winagent/installer.iss
+      - name: 릴리스에 올리기 (설치 마법사 + 단일 exe)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "v$V" web/winagent/dist/rkmsiem-winagent.exe --clobber
+        run: |
+          gh release upload "v$V" web/winagent/Output/rkmsiem-winagent-setup.exe --clobber
+          gh release upload "v$V" web/winagent/dist/rkmsiem-winagent.exe --clobber
