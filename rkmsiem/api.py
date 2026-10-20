@@ -940,6 +940,7 @@ def create_app(platform):
                   "properties": {"action": {"enum": list(AGENT_ACTIONS)}, "reason": {"type": "string", "minLength": 1, "maxLength": 500},
                                  "container": {"type": "string", "maxLength": 128}, "service": {"type": "string", "maxLength": 128},
                                  "pid": {"type": "integer", "minimum": 2}, "start": {"type": ["integer", "null"]}, "expect": {"type": ["string", "null"], "maxLength": 200},
+                                 "message": {"type": "string", "maxLength": 1000},
                                  "incident_id": {"type": ["integer", "null"]}}})
         if g.user.get("kind") == "local":                   # API 토큰(추가 기능)은 권한이 있으면 허용 — 감사 행위자 token:<이름>
             raise ApiError(403, "forbidden", "점검 키로는 조치할 수 없습니다")

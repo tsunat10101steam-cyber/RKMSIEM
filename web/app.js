@@ -853,7 +853,7 @@ panel("team", "21", "담당자", "TEAM", ["team", "users", "담당자"], "담당
 panel("topology", "22", "네트워크 토폴로지", "TOPOLOGY", ["topology", "topo", "network", "토폴로지", "네트워크"], "감지한 기기를 끌어다 놓고 와이어로 연결 · 경보·차단 상태 겹쳐 보기 (web/topology.js)", 12,
   (el, live) => renderTopology(el, live), { liveSkip: true, noOverview: true });
 // ---------------------------------------------------------------- 원격 조치 에이전트 (대상 서버의 rkmsiem-agent · rkmsiem/agents.py)
-const AG_ACT = { container_stop: "중지", container_restart: "재시작", process_kill: "종료", service_restart: "재시작" };
+const AG_ACT = { container_stop: "중지", container_restart: "재시작", process_kill: "종료", service_restart: "재시작", scan: "악성코드 검사", message: "메시지 보내기" };
 const AG = { timer: null };
 const agAgo = t => t ? `${Math.max(0, Math.round(Date.now() / 1000 - t))}초 전` : "-";
 const agBytes = kb => kb == null ? "-" : kb > 1048576 ? `${(kb / 1048576).toFixed(1)}GB` : `${Math.round(kb / 1024)}MB`;
@@ -904,6 +904,10 @@ async function agentDetail(el, name, live) {
       <span>CPU ${i.cpus || "-"}개 · 부하 ${(i.load || []).map(x => x.toFixed(2)).join(" ")} · 메모리 ${agBytes(i.mem?.available)} / ${agBytes(i.mem?.total)} 남음</span>
       <span>허용: ${a.allow.map(x => esc(x)).join(", ") || "없음"}</span><span class="link" data-cmd="dashboard agents">← 목록</span></div>
     ${can("runs:approve") ? `<div class="inline-form"><input class="ag-why" placeholder="사유 (모든 원격 조치에 필수 — 감사 로그에 남음)" style="flex:1" value="${esc(keep)}"></div>` : ""}
+    ${ok("scan") || ok("message") ? `<div class="inline-form" style="margin:6px 0">
+      ${ok("scan") ? `<button class="btn" data-ag="scan">악성코드 검사</button>` : ""}
+      ${ok("message") ? `<input class="ag-msg" placeholder="클라이언트 화면에 띄울 메시지" style="flex:1"><button class="btn" data-ag="message" data-msg-input="1">메시지 보내기</button>` : ""}
+    </div>` : ""}
     <h4 style="margin:12px 0 6px;font:700 14px var(--ko)">컨테이너</h4>
     ${i.docker ? `<div class="tbl"><table><thead><tr><th>이름</th><th>이미지</th><th>상태</th><th>CPU</th><th>메모리</th><th></th></tr></thead><tbody>${(i.containers || []).map(c => `<tr>
       <td><b>${esc(c.name)}</b>${c.protected ? ` <span class="faint">보호</span>` : ""}</td><td class="dim">${esc(c.image || "")}</td><td>${c.state === "running" ? `<span class="acc">${esc(c.status)}</span>` : esc(c.status || c.state)}</td>
@@ -933,9 +937,11 @@ async function agentDetail(el, name, live) {
     if (d.pid) Object.assign(body, { pid: +d.pid, start: +d.start, expect: d.expect });
     if (d.service) body.service = d.service;
     if (d.serviceInput) body.service = $(".ag-svc", el).value.trim();
+    if (d.msgInput) body.message = $(".ag-msg", el).value.trim();
     if (!body.reason) { const w = $(".ag-why", el); w.focus(); shake(w, 5); toast("사유를 적어 주세요", "high"); return; }
     if (act === "service_restart" && !body.service) { shake($(".ag-svc", el), 5); return; }
-    const what = body.container || body.service || `PID ${body.pid} (${body.expect})`;
+    if (act === "message" && !body.message) { shake($(".ag-msg", el), 5); toast("보낼 메시지를 적어 주세요", "high"); return; }
+    const what = body.container || body.service || (body.pid ? `PID ${body.pid} (${body.expect})` : "") || body.message || AG_ACT[act];
     if (!confirm(`${a.name}: ${what} ${AG_ACT[act]}\n계속할까요?`)) return;
     b.disabled = true; b.textContent = "실행 중…";
     try { const o = await api(`/api/agents/${encodeURIComponent(name)}/actions`, { method: "POST", body });

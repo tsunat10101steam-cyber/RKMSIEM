@@ -290,3 +290,37 @@ def test_job_survives_reconnect(srv):
     job_id = p.agents.submit("win-rc", "process_kill", {"pid": 9}, "root")
     assert c2.recv("job")["id"] == job_id                  # 재접속한 연결이 작업을 받음
     c2.close()
+
+
+def test_executor_scan_notify_and_inventory():
+    """윈도우 조치: scan(검사)·notify(메시지)는 항상 허용, 결과 모양 확인. 인벤토리는 기본 필드."""
+    wa = _load_winagent()
+
+    def fake_run(argv, timeout=20):
+        if "-Scan" in argv:
+            return 0, "Scan starting...\nScan finished. No items detected."
+        return 0, ""
+
+    ex = wa.Executor({"ALLOW": "process_kill"}, run=fake_run)
+    assert "scan" in ex.allow and "message" in ex.allow and "process_kill" in ex.allow     # 안전 조치는 항상
+    assert "service_restart" not in ex.allow                                              # ALLOW 에 없으면 제외
+
+    r = ex.execute("scan", {})
+    assert r["scan"] == "quick" and r["rc"] == 0 and r["clean"] is True and r["threats"] == []
+
+    seen = []
+    ex.notifier = lambda t: seen.append(t)
+    r = ex.execute("message", {"message": "점검 중입니다"})
+    assert r["shown"] and seen == ["점검 중입니다"]
+
+    inv = wa.inventory(ex)                                                                 # 리눅스 테스트: 기본 필드
+    assert inv["hostname"] and inv["cpus"] >= 1 and "ips" in inv
+
+
+def test_agent_actions_registered():
+    """새 조치가 백엔드에 등록됐는지 (ACTIONS · SOAR 액션)."""
+    from rkmsiem.agents import ACTIONS
+    assert ACTIONS["scan"] == ("악성코드 검사", ()) and ACTIONS["message"][1] == ("message",)
+    import rkmsiem.soar.actions  # noqa: F401  등록 데코레이터 실행
+    from rkmsiem.plugins import ACTIONS as SOAR
+    assert "scan" in SOAR and "message" in SOAR

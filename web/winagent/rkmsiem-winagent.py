@@ -29,7 +29,9 @@ import threading
 import time
 
 VERSION = "1"
-ALL_ACTIONS = ("process_kill", "service_restart")
+SAFE_ACTIONS = ("scan", "message")                       # 읽기/알림 — 항상 허용 (ALLOW 로 막지 않음)
+GATED_ACTIONS = ("process_kill", "service_restart")     # 파괴적 — ALLOW 에 있을 때만
+ALL_ACTIONS = SAFE_ACTIONS + GATED_ACTIONS
 HEARTBEAT_SEC = 30
 TELEMETRY_SEC = 20
 RECONNECT_MAX = 60
@@ -84,7 +86,9 @@ class Executor:
 
     def __init__(self, env, run=run_cmd):
         self.run = run
-        self.allow = [a for a in csv(env, "ALLOW", ",".join(ALL_ACTIONS)) if a in ALL_ACTIONS]
+        self.notifier = None                                    # 트레이가 넣어 줌 (풍선 알림)
+        # 검사·알림은 늘 허용 (읽기·표시만), 종료·재시작은 ALLOW 로 고른 것만
+        self.allow = list(SAFE_ACTIONS) + [a for a in csv(env, "ALLOW", ",".join(GATED_ACTIONS)) if a in GATED_ACTIONS]
         self.p_procs = [x.lower() for x in csv(env, "PROTECT_PROCESSES",
                         "System,wininit,csrss,services,lsass,winlogon,smss,rkmsiem-winagent")]
         self.p_svcs = [x.lower() for x in csv(env, "PROTECT_SERVICES",
@@ -116,6 +120,36 @@ class Executor:
             raise Refused(f"sc start 실패(rc={rc}): {out.strip()[:200]}")
         return {"service": svc}
 
+    def do_scan(self, p):
+        """Windows Defender 빠른 검사 (ScanType 1). 몇 분 걸릴 수 있어 결과는 작업 기록에 나중에."""
+        import glob as _glob
+        exe = r"C:\Program Files\Windows Defender\MpCmdRun.exe"
+        plat = _glob.glob(r"C:\ProgramData\Microsoft\Windows Defender\Platform\*\MpCmdRun.exe")
+        if plat:
+            exe = sorted(plat)[-1]                              # 최신 Defender 플랫폼 버전
+        rc, out = self.run([exe, "-Scan", "-ScanType", "1"], timeout=1800)
+        threats = [l.strip() for l in out.splitlines() if "threat" in l.lower() or "found" in l.lower()][:20]
+        return {"scan": "quick", "rc": rc, "threats": threats, "clean": rc == 0 and not threats, "output_tail": out.strip()[-600:]}
+
+    def do_message(self, p):
+        """클라이언트 화면에 메시지 — 트레이 풍선, 없으면 메시지 상자."""
+        text = str(p.get("message", ""))[:1000]
+        if self.notifier:
+            try:
+                self.notifier(text)
+            except Exception:                                   # noqa: BLE001
+                self._msgbox(text)
+        else:
+            self._msgbox(text)
+        return {"shown": True, "message": text[:120]}
+
+    @staticmethod
+    def _msgbox(text):
+        if platform.system() == "Windows":
+            import ctypes
+            threading.Thread(target=lambda: ctypes.windll.user32.MessageBoxW(0, text, "RKMSIEM", 0x40 | 0x1000),
+                             daemon=True).start()               # 0x1000=SYSTEMMODAL(최상위)
+
     def _image(self, pid):
         rc, out = self.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"])
         if rc == 0 and out.strip().startswith('"'):
@@ -126,9 +160,85 @@ class Executor:
         return None
 
 
-def inventory():
-    return {"hostname": socket.gethostname(), "os": platform.platform(),
-            "ips": _ips(), "agent_version": VERSION}
+_cpu_prev = {"idle": None, "total": None}
+
+
+def _win_mem():
+    """물리 메모리 (KiB) — ctypes GlobalMemoryStatusEx."""
+    import ctypes
+    from ctypes import wintypes
+
+    class MS(ctypes.Structure):
+        _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+    m = MS()
+    m.dwLength = ctypes.sizeof(MS)
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+    return {"total": m.ullTotalPhys // 1024, "available": m.ullAvailPhys // 1024}
+
+
+def _win_cpu_pct():
+    """전체 CPU 사용률(%) — GetSystemTimes 두 샘플 차이 (호출 간)."""
+    import ctypes
+    from ctypes import wintypes
+    idle, kern, user = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+    if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kern), ctypes.byref(user)):
+        return 0.0
+
+    def q(ft):
+        return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+    idle_t, total_t = q(idle), q(kern) + q(user)
+    pi, pt = _cpu_prev["idle"], _cpu_prev["total"]
+    _cpu_prev["idle"], _cpu_prev["total"] = idle_t, total_t
+    if pi is None or total_t <= pt:
+        return 0.0
+    busy = (total_t - pt) - (idle_t - pi)
+    return round(100.0 * busy / (total_t - pt), 1)
+
+
+def _win_processes(run, p_procs, total_kib):
+    """tasklist → 메모리 상위 프로세스 (작업 관리자처럼). cmd·user·cpu 는 CLI 로 저렴히 못 얻어 생략/0."""
+    rc, out = run(["tasklist", "/FO", "CSV", "/NH"], timeout=15)
+    rows = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith('"'):
+            continue
+        c = [x.strip('"') for x in line.split('","')]
+        if len(c) < 5:
+            continue
+        name = c[0].rsplit(".", 1)[0]
+        try:
+            pid = int(c[1])
+            mem_kb = int(c[4].replace(",", "").replace("K", "").strip())
+        except ValueError:
+            continue
+        rows.append({"pid": pid, "user": "", "cpu": 0.0,
+                     "mem": round(100.0 * mem_kb / total_kib, 1) if total_kib else 0.0,
+                     "comm": name, "cmd": "", "protected": name.lower() in p_procs, "start": 0})
+    rows.sort(key=lambda r: -r["mem"])
+    return rows[:20]
+
+
+def inventory(executor=None):
+    inv = {"hostname": socket.gethostname(), "os": platform.platform(),
+           "ips": _ips(), "cpus": os.cpu_count() or 1, "agent_version": VERSION}
+    if platform.system() == "Windows":
+        try:
+            inv["mem"] = _win_mem()
+            inv["load"] = [_win_cpu_pct()]                      # 전체 CPU% (loadavg 없음) — 한 값
+            total = inv["mem"]["total"]
+            runner = executor.run if executor else run_cmd
+            p_procs = executor.p_procs if executor else []
+            inv["processes"] = _win_processes(runner, p_procs, total)
+            if executor:
+                inv["protect"] = {"services": [], "processes": executor.p_procs}
+        except Exception as e:                                   # noqa: BLE001  수집 실패해도 기본 정보는 보냄
+            inv["inv_error"] = str(e)
+    return inv
 
 
 def _ips():
@@ -239,7 +349,7 @@ class AgentClient:
         tok = self._load_token()
         if tok:
             self.send({"t": "hello", "token": tok, "version": VERSION,
-                       "allow": self.ex.allow, "inventory": inventory()})
+                       "allow": self.ex.allow, "inventory": inventory(self.ex)})
             if (self._recv() or {}).get("t") == "welcome":
                 return True
             self._drop_token()                                  # 폐기된 토큰 — 버리고 재접속해서 재등록
@@ -272,7 +382,7 @@ class AgentClient:
                 self._close()
 
     def _loop(self):
-        self.send({"t": "heartbeat", "version": VERSION, "allow": self.ex.allow, "inventory": inventory()})   # 바로 allow·상태 보고
+        self.send({"t": "heartbeat", "version": VERSION, "allow": self.ex.allow, "inventory": inventory(self.ex)})   # 바로 allow·상태 보고
         self.connected = True                                   # 트레이 상태 표시용
         threading.Thread(target=self._heartbeat_loop, name="hb", daemon=True).start()
         if self.telemetry:
@@ -302,7 +412,7 @@ class AgentClient:
             if self.stop.wait(HEARTBEAT_SEC):
                 return
             try:
-                self.send({"t": "heartbeat", "version": VERSION, "allow": self.ex.allow, "inventory": inventory()})
+                self.send({"t": "heartbeat", "version": VERSION, "allow": self.ex.allow, "inventory": inventory(self.ex)})
             except OSError:
                 return
 
@@ -580,6 +690,7 @@ def tray_app(env):
         pystray.MenuItem("종료", lambda i: do_quit(i)),
     )
     icon = pystray.Icon("rkmsiem", icon_img(False), "RKMSIEM 에이전트", menu)
+    cli.ex.notifier = lambda text: icon.notify(text, "RKMSIEM")   # 서버의 '메시지 보내기' → 트레이 풍선
 
     def watch():
         while not cli.stop.is_set():

@@ -17,6 +17,8 @@ ACTIONS = {                     # 조치 → (설명, 필수 입력)
     "container_restart": ("컨테이너 재시작", ("container",)),
     "process_kill": ("프로세스 종료", ("pid",)),
     "service_restart": ("서비스 재시작", ("service",)),
+    "scan": ("악성코드 검사", ()),                       # 윈도우 클라이언트: Defender 빠른 검사
+    "message": ("메시지 보내기", ("message",)),          # 클라이언트 화면에 알림 (SOAR 의 notify 와 이름 충돌 피함)
 }
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 JOB_TTL = 120                   # 이 시간 안에 에이전트가 안 가져가면 만료

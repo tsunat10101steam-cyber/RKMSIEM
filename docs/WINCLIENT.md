@@ -84,6 +84,16 @@ TELEMETRY=1
 |---|---|---|
 | `process_kill` | `taskkill /PID <pid> /F /T` | pid |
 | `service_restart` | `sc stop` → `sc start` | service |
+| `scan` | Windows Defender 빠른 검사 (결과는 콘솔 **작업 기록**에) | — |
+| `notify` | 클라이언트 화면에 메시지 표시 (트레이 풍선/메시지 상자) | message |
+
+`process_kill`·`service_restart` 는 `ALLOW` 로 켜야 하고, `scan`·`notify` 는 읽기·표시만이라 **항상 허용**된다.
+
+## 콘솔 원격 조치 탭에서 보이는 것
+
+클라이언트가 하트비트로 **메모리·CPU·프로세스 목록**(작업 관리자처럼, 메모리 상위)을 올려서,
+콘솔 → **원격 조치** → 그 PC 를 열면 상단에 CPU·메모리, 프로세스 표(각 행에서 **종료**), 작업 기록이 보인다.
+상단 **악성코드 검사** 버튼과 **메시지 보내기** 입력칸으로 바로 지시할 수 있다 (사유 필수).
 
 무엇을 허용할지는 **클라이언트의 `ALLOW`** 가 정한다 (비우면 보고·텔레메트리만). 서버가 털려도 `ALLOW` 밖의 일은 못 한다.
 `PROTECT_PROCESSES`(기본 System·lsass·winlogon 등)·`PROTECT_SERVICES`(기본 WinDefend·EventLog 등)에 든 것은 **클라이언트가 스스로 거부**한다.

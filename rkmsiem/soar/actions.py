@@ -319,3 +319,13 @@ def process_kill(ctx, inp):
 @action("service_restart", destructive=True, description="원격: 서비스 재시작 (rkmsiem-agent)")
 def service_restart(ctx, inp):
     return _remote(ctx, "service_restart", inp, ("service",))
+
+
+@action("scan", description="원격: 악성코드 검사 (윈도우 클라이언트 · Defender 빠른 검사 — 결과는 작업 기록에)")
+def scan(ctx, inp):
+    return _remote(ctx, "scan", inp, ())
+
+
+@action("message", description="원격: 클라이언트 화면에 메시지 표시 (윈도우 트레이 알림)")
+def message(ctx, inp):
+    return _remote(ctx, "message", inp, ("message",))
