@@ -596,6 +596,19 @@ def tray_app(env):
     return 0
 
 
+_mutex_handle = None
+
+
+def _already_running():
+    """윈도우 전역 뮤텍스로 단일 인스턴스 보장 — 이미 돌고 있으면 True (중복 트레이·중복 연결 방지)."""
+    global _mutex_handle
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    _mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\RKMSIEMWinAgent")
+    return ctypes.windll.kernel32.GetLastError() == 183        # ERROR_ALREADY_EXISTS
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):                 # 윈도우 콘솔(cp1252)에서 한글 출력이 터지지 않게
         try:
@@ -611,6 +624,9 @@ def main():
         except Exception as e:                                  # noqa: BLE001  GUI 불가 → 콘솔로
             sys.stderr.write(f"GUI 를 열 수 없어 콘솔 설정으로 전환합니다: {e}\n")
             return setup_console()
+    if _already_running():                                     # 이미 떠 있으면 조용히 종료 (중복 방지)
+        sys.stderr.write("이미 실행 중입니다 (트레이 확인)\n")
+        return 0
     env = load_env()
     if "--headless" in sys.argv:                               # 서비스/부팅용 (트레이 없이)
         return _run_headless(env)
