@@ -40,6 +40,9 @@ Name: "{userstartup}\RKMSIEM Agent"; Filename: "{app}\{#AppExe}"
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "RKMSIEM 에이전트 지금 실행 (트레이 아이콘)"; Flags: nowait postinstall skipifsilent
 
+[UninstallRun]
+Filename: "taskkill"; Parameters: "/IM {#AppExe} /F"; Flags: runhidden; RunOnceId: "killagent"
+
 [Code]
 var
   ConnPage: TInputQueryWizardPage;
@@ -107,6 +110,17 @@ begin
   if OptPage.Values[2] then s := s + 'TELEMETRY=1' + #13#10 else s := s + 'TELEMETRY=0' + #13#10;
   path := dir + '\winagent.env';
   SaveStringToFile(path, s, False);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var rc: Integer;
+begin
+  Result := '';
+  // 실행 중인 이전 버전이 exe 를 잠그고 있으면 덮어쓰기 실패(코드 5) → 먼저 멈춘다
+  Exec('schtasks', '/end /tn {#TaskName}', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  Exec('schtasks', '/delete /tn {#TaskName} /f', '', SW_HIDE, ewWaitUntilTerminated, rc);   // 옛 SYSTEM 작업 제거
+  Exec('taskkill', '/IM {#AppExe} /F', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  Sleep(800);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
