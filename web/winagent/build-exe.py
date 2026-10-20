@@ -23,6 +23,8 @@ def main():
         sys.stderr.write("Run this on Windows (the exe is built for the OS it runs on).\n")
     cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--console",
            "--name", "rkmsiem-winagent",
+           "--hidden-import", "pystray._win32",          # pystray 백엔드는 동적 import
+           "--collect-submodules", "pystray",
            "--distpath", os.path.join(HERE, "dist"),
            "--workpath", os.path.join(HERE, "build"),
            "--specpath", HERE, SRC]

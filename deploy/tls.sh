@@ -79,7 +79,9 @@ fi
 [ "$FRESH_NGINX" = 1 ] && rm -f /etc/nginx/sites-enabled/default
 
 echo "==> 인증서"
-install -d -m 0700 "$TLS"
+# 서비스 계정(rkmsiem)이 키를 읽어야 함 (윈도우 클라이언트 소켓 서버가 TLS 로 직접 로드) — 디렉터리는 그룹 진입 허용
+install -d -m 0750 "$TLS"
+getent group rkmsiem >/dev/null 2>&1 && chgrp rkmsiem "$TLS" 2>/dev/null || true
 if [ "$RENEW" = 1 ] || [ ! -s "$CRT" ] || [ ! -s "$KEY" ]; then
 	SAN="DNS:$(hostname),DNS:localhost,IP:127.0.0.1"
 	for ip in $(host_ips); do SAN+=",IP:$ip"; done
@@ -90,7 +92,8 @@ if [ "$RENEW" = 1 ] || [ ! -s "$CRT" ] || [ ! -s "$KEY" ]; then
 		-subj "/CN=RKMSIEM $(hostname)/O=RKMSIEM" -keyout "$KEY.new" -out "$CRT.new" \
 		-addext "subjectAltName=$SAN" -addext "basicConstraints=critical,CA:TRUE" \
 		-addext "keyUsage=critical,digitalSignature,keyCertSign" -addext "extendedKeyUsage=serverAuth" 2>/dev/null
-	chmod 600 "$KEY.new"; chmod 644 "$CRT.new"
+	chmod 640 "$KEY.new"; chmod 644 "$CRT.new"
+	getent group rkmsiem >/dev/null 2>&1 && chgrp rkmsiem "$KEY.new" "$CRT.new" 2>/dev/null || true
 	mv -f "$KEY.new" "$KEY"; mv -f "$CRT.new" "$CRT"
 	echo "  새 인증서: $SAN"
 else

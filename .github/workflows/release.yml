@@ -63,7 +63,7 @@ jobs:
       - name: exe 빌드 (PyInstaller · 표준 라이브러리만)
         shell: bash
         run: |
-          pip install -q pyinstaller
+          pip install -q pyinstaller pystray pillow
           python web/winagent/build-exe.py
       - name: 설치 마법사 빌드 (Inno Setup)
         shell: bash

@@ -156,9 +156,17 @@ def main(argv=None):
         p.start(collectors=not a.no_collectors)
         agentsock = None
         if s.get("agent_socket.enabled"):
-            from .agent_socket import AgentSocketServer
-            agentsock = AgentSocketServer(p, s).start()
-            print(f"에이전트 소켓(윈도우 클라이언트): {s.get('agent_socket.host')}:{agentsock.port} (tls={bool(s.get('agent_socket.tls'))})")
+            try:                                               # 소켓을 못 켜도 SIEM 본체는 계속 — 절대 전체를 끌어내리지 않음
+                from .agent_socket import AgentSocketServer
+                agentsock = AgentSocketServer(p, s).start()
+                print(f"에이전트 소켓(윈도우 클라이언트): {s.get('agent_socket.host')}:{agentsock.port} (tls={bool(s.get('agent_socket.tls'))})")
+            except Exception as e:                             # noqa: BLE001
+                agentsock = None
+                print(f"⚠ 에이전트 소켓을 켜지 못했습니다 (SIEM 은 계속 작동): {e}")
+                if isinstance(e, PermissionError):
+                    print("  TLS 키를 서비스 계정(rkmsiem)이 못 읽습니다 — "
+                          "sudo chgrp rkmsiem /etc/rkmsiem/tls /etc/rkmsiem/tls/rkmsiem.* && "
+                          "sudo chmod 0750 /etc/rkmsiem/tls && sudo chmod 0640 /etc/rkmsiem/tls/rkmsiem.key")
         host, port = s.get("api.host"), s.get("api.port")
         print(f"RKMSIEM on http://{host}:{port}  (soar mode: {s.get('soar.mode')}, "
               f"firewall: {'nftables' if p.response.firewall else 'none'}, accounts: {'helper' if p.response.accounts else 'none'})")

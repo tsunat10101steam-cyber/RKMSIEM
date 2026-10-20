@@ -32,8 +32,13 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "dist\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 
-[UninstallRun]
-Filename: "schtasks"; Parameters: "/delete /tn {#TaskName} /f"; Flags: runhidden; RunOnceId: "delagenttask"
+[Icons]
+Name: "{group}\RKMSIEM Agent"; Filename: "{app}\{#AppExe}"
+Name: "{group}\RKMSIEM Agent 설정"; Filename: "{app}\{#AppExe}"; Parameters: "--setup"
+Name: "{userstartup}\RKMSIEM Agent"; Filename: "{app}\{#AppExe}"
+
+[Run]
+Filename: "{app}\{#AppExe}"; Description: "RKMSIEM 에이전트 지금 실행 (트레이 아이콘)"; Flags: nowait postinstall skipifsilent
 
 [Code]
 var
@@ -105,16 +110,8 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
-var
-  rc: Integer;
-  exe: String;
 begin
-  if CurStep = ssPostInstall then begin
+  // 설정 파일만 생성. 자동 실행은 [Icons] 의 시작프로그램 바로가기(로그온 시 트레이)로, 즉시 실행은 [Run] 으로.
+  if CurStep = ssPostInstall then
     WriteConfig();
-    exe := ExpandConstant('{app}\{#AppExe}');
-    // 부팅 시 SYSTEM 으로 자동 실행 (콘솔 exe 를 SCM 서비스로 올리는 배선보다 안정적)
-    Exec('schtasks', '/create /tn {#TaskName} /tr """' + exe + '""" /sc onstart /ru SYSTEM /rl HIGHEST /f',
-         '', SW_HIDE, ewWaitUntilTerminated, rc);
-    Exec('schtasks', '/run /tn {#TaskName}', '', SW_HIDE, ewWaitUntilTerminated, rc);
-  end;
 end;

@@ -174,6 +174,8 @@ class AgentClient:
         self.wlock = threading.Lock()
         self.stop = threading.Event()
         self.telemetry = env.get("TELEMETRY") == "1"
+        self.connected = False                                  # 트레이 아이콘 상태
+        self.last_event = "(아직 없음)"
 
     # 연결 (TLS 지문 핀) — tls 없이 쓰려면 RKMSIEM_INSECURE=1
     def connect(self):
@@ -271,6 +273,7 @@ class AgentClient:
 
     def _loop(self):
         self.send({"t": "heartbeat", "version": VERSION, "allow": self.ex.allow, "inventory": inventory()})   # 바로 allow·상태 보고
+        self.connected = True                                   # 트레이 상태 표시용
         threading.Thread(target=self._heartbeat_loop, name="hb", daemon=True).start()
         if self.telemetry:
             threading.Thread(target=self._telemetry_loop, name="tel", daemon=True).start()
@@ -286,8 +289,10 @@ class AgentClient:
             jid, action, params = msg.get("id"), msg.get("action"), msg.get("params") or {}
             try:
                 res = self.ex.execute(action, params)
+                self.last_event = f"{action} {params} → 성공"
                 self.send({"t": "result", "id": jid, "ok": True, "result": res, "error": None})
             except Exception as e:                                  # noqa: BLE001  무슨 일이 있어도 결과는 보고
+                self.last_event = f"{action} {params} → 실패: {e}"
                 self.send({"t": "result", "id": jid, "ok": False, "result": {}, "error": str(e)})
         elif t == "ping":
             self.send({"t": "pong"})
@@ -313,6 +318,7 @@ class AgentClient:
                     return
 
     def _close(self):
+        self.connected = False
         try:
             if self.sock:
                 self.sock.close()
@@ -486,6 +492,113 @@ def setup_console():
     return 0
 
 
+# ================================================================== 트레이 아이콘
+def _run_headless(env):
+    host = env.get("RKMSIEM_HOST")
+    if not host:
+        sys.stderr.write("설정이 없습니다 — 먼저 'rkmsiem-winagent.exe --setup' 으로 설정하세요\n")
+        return 2
+    cli = AgentClient(host, env.get("RKMSIEM_PORT", "8452"), env)
+    import signal
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: cli.stop.set())
+    except (ValueError, AttributeError):
+        pass
+    try:
+        cli.run_forever()
+    except KeyboardInterrupt:
+        cli.stop.set()
+    return 0
+
+
+def tray_app(env):
+    """트레이 아이콘(연결됨=초록/끊김=회색) + 우클릭 메뉴(상태·설정·종료). 에이전트는 백그라운드 스레드로 돈다."""
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+        import pystray
+        from PIL import Image, ImageDraw
+    except Exception as e:                                      # noqa: BLE001  트레이 라이브러리 없음 → 헤드리스로
+        sys.stderr.write(f"트레이를 쓸 수 없어 백그라운드로 실행합니다: {e}\n")
+        return _run_headless(env)
+
+    host = env.get("RKMSIEM_HOST")
+    if not host:                                                # 설정이 없으면 먼저 설치 마법사
+        return setup_gui() or 0
+    cli = AgentClient(host, env.get("RKMSIEM_PORT", "8452"), env)
+    threading.Thread(target=cli.run_forever, name="agent", daemon=True).start()
+
+    root = tk.Tk()
+    root.withdraw()                                             # 숨은 본체 (트레이만 보임)
+
+    def icon_img(connected):
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.ellipse((8, 8, 56, 56), fill=(40, 180, 80) if connected else (150, 150, 150))
+        return img
+
+    st = {"win": None}
+
+    def show_status():
+        w = st["win"]
+        if w is not None:
+            try:
+                w.deiconify(); w.lift(); return
+            except tk.TclError:
+                pass
+        w = tk.Toplevel(root); st["win"] = w
+        w.title("RKMSIEM 에이전트"); w.resizable(False, False)
+        f = ttk.Frame(w, padding=16); f.grid()
+        lbl = ttk.Label(f, font=("", 11)); lbl.grid(row=0, column=0, sticky="w")
+        sub = ttk.Label(f, foreground="#555", wraplength=420, justify="left"); sub.grid(row=1, column=0, sticky="w", pady=(8, 0))
+
+        def refresh():
+            on = cli.connected
+            lbl.config(text=("● 연결됨" if on else "○ 연결 끊김 (재시도 중)"),
+                       foreground="#1a7f37" if on else "#b00")
+            sub.config(text=f"서버: {host}:{env.get('RKMSIEM_PORT', '8452')}\n"
+                            f"허용 조치: {', '.join(cli.ex.allow) or '없음 (보고만)'}\n"
+                            f"마지막 조치: {cli.last_event}")
+            if st["win"] is not None:
+                w.after(1500, refresh)
+        refresh()
+        ttk.Button(f, text="설정 열기", command=open_settings).grid(row=2, column=0, sticky="w", pady=(12, 0))
+        w.protocol("WM_DELETE_WINDOW", lambda: (w.withdraw()))   # 닫아도 트레이에 남음
+
+    def open_settings():
+        import subprocess                                       # 설정 마법사는 별도 프로세스로 (tkinter 다중 루트 회피)
+        subprocess.Popen([sys.executable, "--setup"], close_fds=False)
+
+    def do_quit(icon):
+        cli.stop.set()
+        icon.stop()
+        try:
+            root.after(0, root.destroy)
+        except tk.TclError:
+            pass
+
+    menu = pystray.Menu(
+        pystray.MenuItem("상태 / 메뉴", lambda i: root.after(0, show_status), default=True),
+        pystray.MenuItem("설정", lambda i: root.after(0, open_settings)),
+        pystray.MenuItem("종료", lambda i: do_quit(i)),
+    )
+    icon = pystray.Icon("rkmsiem", icon_img(False), "RKMSIEM 에이전트", menu)
+
+    def watch():
+        while not cli.stop.is_set():
+            try:
+                icon.icon = icon_img(cli.connected)
+                icon.title = "RKMSIEM 에이전트 — " + ("연결됨" if cli.connected else "연결 끊김")
+            except Exception:                                   # noqa: BLE001
+                pass
+            if cli.stop.wait(3):
+                return
+    threading.Thread(target=watch, name="tray-watch", daemon=True).start()
+    icon.run_detached()
+    root.mainloop()
+    return 0
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):                 # 윈도우 콘솔(cp1252)에서 한글 출력이 터지지 않게
         try:
@@ -502,18 +615,9 @@ def main():
             sys.stderr.write(f"GUI 를 열 수 없어 콘솔 설정으로 전환합니다: {e}\n")
             return setup_console()
     env = load_env()
-    host = env.get("RKMSIEM_HOST")
-    if not host:
-        sys.stderr.write("설정이 없습니다 — 먼저 'rkmsiem-winagent.exe --setup' 으로 설치 마법사를 실행하세요\n")
-        return 2
-    cli = AgentClient(host, env.get("RKMSIEM_PORT", "8452"), env)
-    import signal
-    signal.signal(signal.SIGTERM, lambda *_: cli.stop.set())
-    try:
-        cli.run_forever()
-    except KeyboardInterrupt:
-        cli.stop.set()
-    return 0
+    if "--headless" in sys.argv:                               # 서비스/부팅용 (트레이 없이)
+        return _run_headless(env)
+    return tray_app(env)                                        # 기본: 트레이 아이콘
 
 
 if __name__ == "__main__":
