@@ -450,22 +450,19 @@ def setup_gui():
         status.config(text=msg, foreground="#1a7f37" if ok else "#b00")
 
     def do_save():
-        p = write_config(collect())
-        status.config(text=f"저장됨: {p}", foreground="#1a7f37")
-
-    def do_install():
         write_config(collect())
-        ok, msg = install_service()
-        status.config(text=msg, foreground="#1a7f37" if ok else "#b00")
-        if ok:
-            messagebox.showinfo("설치 완료", msg)
+        status.config(text="저장됨 — 창을 닫으면 적용됩니다 (트레이 재시작 또는 재로그인)", foreground="#1a7f37")
+
+    def do_save_close():
+        write_config(collect())
+        root.destroy()
 
     btns = ttk.Frame(frm)
     btns.grid(row=11, column=0, columnspan=2, pady=(12, 0), sticky="w")
     ttk.Button(btns, text="지문 가져오기", command=do_fetch_fp).grid(row=0, column=0, padx=4)
     ttk.Button(btns, text="연결 테스트", command=do_test).grid(row=0, column=1, padx=4)
     ttk.Button(btns, text="저장", command=do_save).grid(row=0, column=2, padx=4)
-    ttk.Button(btns, text="서비스로 설치·시작", command=do_install).grid(row=0, column=3, padx=4)
+    ttk.Button(btns, text="저장하고 닫기", command=do_save_close).grid(row=0, column=3, padx=4)
     root.mainloop()
 
 
