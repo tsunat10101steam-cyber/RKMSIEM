@@ -151,6 +151,16 @@ class Agents:
             with self._cv:
                 self._cv.wait(timeout=min(left, 5.0))
 
+    def requeue(self, job_ids):
+        """보낸 줄 알았던 작업을 다시 큐로 (연결이 끊겨 전달 못 한 경우) — 다른 연결이 집어 가게."""
+        ids = [j for j in (job_ids or [])]
+        if not ids:
+            return
+        qs = ",".join("?" * len(ids))
+        self.db.execute(f"UPDATE agent_jobs SET state='queued', sent_at=NULL WHERE id IN ({qs}) AND state='sent'", ids)
+        with self._cv:
+            self._cv.notify_all()
+
     def finish(self, agent_id, job_id, ok, result, error):
         r = self.db.one("SELECT * FROM agent_jobs WHERE id=? AND agent_id=?", (job_id, agent_id))
         if not r or r["state"] not in ("sent", "queued"):

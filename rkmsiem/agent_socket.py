@@ -152,10 +152,14 @@ class AgentSocketServer:
                 if stop.wait(2):
                     return
                 continue
-            for j in jobs:
+            for i, j in enumerate(jobs):
+                if stop.is_set() or self._stop.is_set():        # 연결이 닫히는 중이면 집어 둔 작업을 다시 큐로 (유실·중복 전달 방지)
+                    self.p.agents.requeue([x["id"] for x in jobs[i:]])
+                    return
                 try:
                     send({"t": "job", "id": j["id"], "action": j["action"], "params": j["params"]})
                 except OSError:
+                    self.p.agents.requeue([x["id"] for x in jobs[i:]])
                     stop.set()
                     return
 

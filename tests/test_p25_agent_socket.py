@@ -34,7 +34,8 @@ def srv(tmp_path, config_dir):
 
 class Client:
     def __init__(self, port):
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=30)
+        self.sock.settimeout(30)                    # 느린 CI 에서도 recv 가 성급히 타임아웃 나지 않게
         self.f = self.sock.makefile("rb")
 
     def send(self, obj):
@@ -272,3 +273,20 @@ def test_load_env_tolerates_ansi_encoded_file(tmp_path, monkeypatch):
     monkeypatch.setenv("WINAGENT_ENV", str(p))
     env = wa.load_env()
     assert env["RKMSIEM_HOST"] == "10.0.0.53" and env["RKMSIEM_PORT"] == "8452" and env["ALLOW"] == "process_kill"
+
+
+def test_job_survives_reconnect(srv):
+    """한 번 등록한 토큰으로 끊었다 재접속해도 작업을 받아야 (닫힌 연결의 푸시 스레드가 가로채 유실시키지 않음)."""
+    p, s = srv
+    code = p.agents.create_enroll("win-rc", "root")["code"]
+    c = Client(s.port)                                     # 연결1: 등록만
+    c.send({"t": "enroll", "code": code, "hostname": "RC", "version": "1"})
+    token = c.recv("enrolled")["token"]
+    c.close()                                              # 끊김
+
+    c2 = Client(s.port)                                    # 연결2: 토큰으로 재접속
+    c2.send({"t": "hello", "token": token, "allow": ["process_kill"], "inventory": {"hostname": "RC"}})
+    c2.recv("welcome")
+    job_id = p.agents.submit("win-rc", "process_kill", {"pid": 9}, "root")
+    assert c2.recv("job")["id"] == job_id                  # 재접속한 연결이 작업을 받음
+    c2.close()
